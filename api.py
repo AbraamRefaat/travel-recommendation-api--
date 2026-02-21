@@ -11,6 +11,10 @@ import socket
 import threading
 import time
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Import your recommendation system
 from tourist_recommendation_system import TouristRecommendationSystem, UserProfile

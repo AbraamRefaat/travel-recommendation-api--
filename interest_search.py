@@ -10,6 +10,10 @@ import pandas as pd
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from google import genai as google_genai
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Module-level cache — populated once at startup
@@ -72,7 +76,7 @@ def init_interest_search(excel_path: str = "Cairo_Giza_POI_Database_v3.xlsx") ->
 # STEP 2  —  Cosine-similarity search
 # ---------------------------------------------------------------------------
 
-def search_by_interest(user_query: str, top_k: int = 5) -> list[dict]:
+def search_by_interest(user_query: str, top_k: int = 3) -> list[dict]:
     if _poi_df is None or _poi_vectors is None or _st_model is None:
         raise RuntimeError(
             "[InterestSearch] Not initialised yet. Retry in ~60 seconds."
