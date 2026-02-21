@@ -94,6 +94,21 @@ def broadcast_server():
 # ============================================================================
 # 4. STARTUP - Load System Once
 # ============================================================================
+
+# Flag so the /search-by-interest endpoint can tell users to wait if embeddings
+# are still loading in the background.
+interest_search_ready = False
+
+def _load_interest_search_bg():
+    """Background thread: loads Sentence Transformer + encodes all POIs."""
+    global interest_search_ready
+    try:
+        init_interest_search("Cairo_Giza_POI_Database_v3.xlsx")
+        interest_search_ready = True
+        print("✅ [InterestSearch] Embeddings ready — /search-by-interest is live!")
+    except Exception as ie:
+        print(f"⚠️  [InterestSearch] Could not initialise: {ie}")
+
 @app.on_event("startup")
 def startup():
     global system
@@ -121,11 +136,10 @@ def startup():
         print("📡 Broadcasting server presence for automatic discovery...")
         print("=" * 60)
 
-        # ── New: initialise interest-based search embeddings (non-breaking) ──
-        try:
-            init_interest_search("Cairo_Giza_POI_Database_v3.xlsx")
-        except Exception as ie:
-            print(f"⚠️  [InterestSearch] Could not initialise: {ie}")
+        # ── New: load embeddings in background so healthcheck passes instantly ──
+        interest_thread = threading.Thread(target=_load_interest_search_bg, daemon=True)
+        interest_thread.start()
+        print("🔍 [InterestSearch] Loading embeddings in background…")
         
     except Exception as e:
         print(f"❌ ERROR: Failed to load system: {e}")
@@ -262,6 +276,14 @@ def search_by_interest_endpoint(request: InterestSearchRequest):
     if not request.query or not request.query.strip():
         from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Query string must not be empty.")
+
+    if not interest_search_ready:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=503,
+            detail="Interest search is still loading (embedding model). Please retry in ~60 seconds."
+        )
+
 
     try:
         print(f"\n🔍 [InterestSearch] Query: '{request.query}' | top_k={request.top_k}")
