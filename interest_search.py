@@ -137,8 +137,23 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> str:
         "Be concise."
     )
 
-    response = _gemini_client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt,
-    )
-    return response.text
+    # Try models in order — first available one wins
+    _MODELS_TO_TRY = [
+        "gemini-2.0-flash-lite",     # fastest & cheapest, confirmed available
+        "gemini-2.0-flash-001",      # stable version tag
+        "gemini-2.5-flash",          # newer alternative
+    ]
+
+    last_error = None
+    for model_name in _MODELS_TO_TRY:
+        try:
+            response = _gemini_client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            return response.text
+        except Exception as e:
+            last_error = e
+            continue
+
+    raise last_error
