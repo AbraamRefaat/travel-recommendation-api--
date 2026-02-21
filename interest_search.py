@@ -129,19 +129,26 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> str:
             f"{p.get('Indoor / outdoor', '')}"
         )
 
+    # Convert lines list to a block for the prompt
+    lines_block = "\n".join(lines)
+
     prompt = (
-        f'User interest: "{user_query}"\n\n'
-        f"Top matching Cairo & Giza places:\n" + "\n".join(lines) + "\n\n"
-        "Give a short, friendly recommendation (2-3 sentences per place) "
-        "explaining why each matches the interest and one helpful visit tip. "
-        "Be concise."
+        f"You are an Expert Local Guide in Cairo with deep knowledge of Egyptian history, culture, and hidden gems. "
+        f"A traveler has expressed interest in: \"{user_query}\".\n\n"
+        f"Based on their interest, evaluate the following top-matching places in Cairo & Giza:\n"
+        f"{lines_block}\n\n"
+        f"Your Task:\n"
+        f"1. Start with a brief, high-energy 1-sentence introduction that acknowledges their interest.\n"
+        f"2. For each place, provide a 2-3 sentence recommendation using this structure:\n"
+        f"   - **[Place Name]**: Explain exactly why it fits their interest of \"{user_query}\".\n"
+        f"   - Include a 'Pro Tip' (e.g., best time to visit, a hidden corner, or what to avoid).\n"
+        f"3. End with a short 'Guide's Final Word' on how to make the most of this specific collection of places.\n\n"
+        f"Style Guide: Professional, enthusiastic, culturally rich, and structured with Markdown bolding and bullet points. Be concise but impactful."
     )
 
     # Try models in order — first available one wins
     _MODELS_TO_TRY = [
-        "gemini-2.0-flash-lite",     # fastest & cheapest, confirmed available
-        "gemini-2.0-flash-001",      # stable version tag
-        "gemini-2.5-flash",          # newer alternative
+        "gemini-3-flash-preview",
     ]
 
     last_error = None

@@ -55,7 +55,6 @@ logs/
 *.bat
 
 # Don't ignore the POI database - we need it for deployment
-!Cairo_Giza_Final_Verified_POIs.xlsx
 !Cairo_Giza_POI_Database_v3.xlsx
 
 # Don't ignore deployment files
