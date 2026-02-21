@@ -55,6 +55,9 @@ class RecommendationRequest(BaseModel):
     willingness_to_pay_entry: bool = True
     indoor_preference: str = "neutral"
 
+    # Step 6 — optional free-text interest (triggers semantic search + Gemini)
+    specific_interest: Optional[str] = None
+
 # ============================================================================
 # 3. NETWORK BROADCAST FOR DISCOVERY
 # ============================================================================
@@ -249,7 +252,31 @@ def recommend(request: RecommendationRequest):
         
         print(f"✅ SUCCESS: Generated {total_pois} POIs across {request.duration_days} days")
         print("=" * 60)
-        
+
+        # ── Optional Step 6: specific interest → semantic search + Gemini ──
+        if request.specific_interest and request.specific_interest.strip():
+            print(f"🔍 [InterestSearch] specific_interest: '{request.specific_interest}'")
+            try:
+                matched_pois = search_by_interest(
+                    request.specific_interest.strip(), top_k=5
+                )
+                try:
+                    gemini_text = get_gemini_recommendation(
+                        request.specific_interest.strip(), matched_pois
+                    )
+                except Exception as ge:
+                    gemini_text = None
+                    print(f"⚠️  Gemini error: {ge}")
+
+                response["interest_search"] = {
+                    "query": request.specific_interest.strip(),
+                    "places": matched_pois,
+                    "recommendation": gemini_text,
+                }
+                print("✅ [InterestSearch] Results added to response.")
+            except Exception as ise:
+                print(f"⚠️  [InterestSearch] Skipped: {ise}")
+
         return response
         
     except Exception as e:
