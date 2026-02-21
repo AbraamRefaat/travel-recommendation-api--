@@ -260,18 +260,21 @@ def recommend(request: RecommendationRequest):
                 matched_pois = search_by_interest(
                     request.specific_interest.strip(), top_k=5
                 )
+                gemini_text = None
+                gemini_error = None
                 try:
                     gemini_text = get_gemini_recommendation(
                         request.specific_interest.strip(), matched_pois
                     )
                 except Exception as ge:
-                    gemini_text = None
+                    gemini_error = str(ge)
                     print(f"⚠️  Gemini error: {ge}")
 
                 response["interest_search"] = {
                     "query": request.specific_interest.strip(),
                     "places": matched_pois,
                     "recommendation": gemini_text,
+                    "gemini_error": gemini_error,   # None when working, error string when not
                 }
                 print("✅ [InterestSearch] Results added to response.")
             except Exception as ise:
