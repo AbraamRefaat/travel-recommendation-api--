@@ -67,15 +67,25 @@ def search_by_interest(user_query: str, top_k: int = 5) -> list[dict]:
 
     query_vector = _st_model.encode(user_query).tolist()
 
-    search_result = _qdrant_client.search(
-        collection_name=_collection_name,
-        query_vector=query_vector,
-        limit=top_k
-    )
+    try:
+        # Use query_points (modern API)
+        search_result = _qdrant_client.query_points(
+            collection_name=_collection_name,
+            query=query_vector,
+            limit=top_k
+        ).points
+    except AttributeError:
+        # Fallback to search (older API)
+        search_result = _qdrant_client.search(
+            collection_name=_collection_name,
+            query_vector=query_vector,
+            limit=top_k
+        )
 
     results = []
     for hit in search_result:
         poi = hit.payload
+        # Compatibility: ensure 'id' is in the payload for other modules
         poi['id'] = hit.id
         results.append(poi)
 

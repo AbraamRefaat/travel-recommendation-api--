@@ -133,8 +133,8 @@ def startup():
         print()
     
     try:
-        print("📂 Loading POI database...")
-        system = TouristRecommendationSystem("Cairo_Giza_POI_Database_v3.xlsx")
+        print("📡 Connecting to Qdrant...")
+        system = TouristRecommendationSystem("pois")
         print("✅ System ready!")
         print("=" * 60)
         

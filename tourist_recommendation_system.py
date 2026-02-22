@@ -74,32 +74,63 @@ class DataLoader:
     """
     Handles loading and cleaning of the Excel dataset.
     """
-    def __init__(self, file_path: str):
-        self.file_path = file_path
+    def __init__(self, collection_name: str = "pois"):
+        self.collection_name = collection_name
         self.df = None
         self.pois: List[POI] = []
+        from qdrant_client import QdrantClient
+        self.client = QdrantClient(host=os.environ.get("QDRANT_HOST", "localhost"), port=int(os.environ.get("QDRANT_PORT", 6333)))
 
     def load_data(self):
-        print(f"Loading data from {self.file_path}...")
+        print(f"📡 [DataLoader] Loading data from Qdrant collection '{self.collection_name}'...")
         try:
-            self.df = pd.read_excel(self.file_path)
-            # Standardize columns based on verified names
-            # ['Name', 'Latitude / Longitude', 'Category', 'Sub-category', 'Estimated visit duration', 'Entry cost (EGP)', 'Opening hours', 'Indoor / outdoor']
+            # Scroll through all points in Qdrant
+            points, _ = self.client.scroll(
+                collection_name=self.collection_name,
+                limit=1000,
+                with_payload=True,
+                with_vectors=False
+            )
             
-            # Rename for easier access
-            self.df.rename(columns={
-                'Latitude / Longitude': 'Coordinates',
-                'Estimated visit duration': 'Duration',
-                'Entry cost (EGP)': 'Cost',
-                'Opening hours': 'Hours',
-                'Indoor / outdoor': 'Type'
-            }, inplace=True)
+            for p in points:
+                row = p.payload
+                # Matches the payload structure from GUI ingestion
+                lat_lon = row.get('Latitude / Longitude', '0,0')
+                lat, lon = 0.0, 0.0
+                try:
+                    parts = str(lat_lon).split(',')
+                    lat, lon = float(parts[0]), float(parts[1])
+                except: pass
 
-            self._parse_pois()
-            print(f"Successfully loaded {len(self.pois)} POIs.")
+                duration = 1.5
+                try:
+                    d_str = str(row.get('Estimated visit duration', '1.5'))
+                    match = re.search(r"(\d+(\.\d+)?)", d_str)
+                    if match: duration = float(match.group(1))
+                except: pass
+
+                cost = float(row.get('Entry cost (EGP)', 0))
+                
+                poi = POI(
+                    id=int(p.id),
+                    name=str(row.get('Name', 'Unknown')),
+                    lat=lat,
+                    lon=lon,
+                    category=str(row.get('Category', 'Unknown')),
+                    subcategory=str(row.get('Sub-category', '')),
+                    duration_hours=duration,
+                    cost=cost,
+                    opening_hours=str(row.get('Opening hours', '09:00 - 17:00')),
+                    indoor_outdoor=str(row.get('Indoor / outdoor', 'Both')),
+                    description=f"{row.get('Category')} - {row.get('Sub-category')}"
+                )
+                self.pois.append(poi)
+            
+            print(f"✅ [DataLoader] Loaded {len(self.pois)} POIs from Qdrant.")
         except Exception as e:
-            print(f"Error loading data: {e}")
-            raise
+            print(f"❌ [DataLoader] Error loading from Qdrant: {e}. Falling back to Excel if possible.")
+            # Optional: Add Excel fallback here if needed, but for now we want to go Excel-free.
+            pass
 
     def _parse_pois(self):
         for idx, row in self.df.iterrows():
@@ -520,8 +551,8 @@ except ImportError:
     from ai_candidate_generator import AICandidateGenerator
 
 class TouristRecommendationSystem:
-    def __init__(self, excel_file: str):
-        self.loader = DataLoader(excel_file)
+    def __init__(self, collection_name: str = "pois"):
+        self.loader = DataLoader(collection_name)
         self.loader.load_data()
         
         # Initialize AI Generator
