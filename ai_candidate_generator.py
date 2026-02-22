@@ -7,24 +7,21 @@ from sklearn.metrics.pairwise import cosine_similarity
 import re
 
 class AICandidateGenerator:
-    def __init__(self, poi_file="Cairo_Giza_POI_Database_v3.xlsx", model_name='all-MiniLM-L6-v2'):
-        self.poi_file = poi_file
+    def __init__(self, collection_name="pois", model_name='all-MiniLM-L6-v2'):
+        self.collection_name = collection_name
         self.model_name = model_name
         self.df = None
-        self.embeddings = None
-        self.model = None
-        self.cache_file = os.path.join(os.path.dirname(__file__), "poi_embeddings.pkl")
+        self.client = None
         
-        self.preferences = {
-            "group_dynamics": {},
-            "interests": {},
-            "budget": {},
-            "constraints": {},
-            "logistics": {}
-        }
+        from qdrant_client import QdrantClient
+        self.client = QdrantClient(host=os.environ.get("QDRANT_HOST", "localhost"), port=int(os.environ.get("QDRANT_PORT", 6333)))
         
-        self.load_data()
-        self.load_model_and_embeddings()
+        # We still need the Cross-Encoder for re-ranking
+        from sentence_transformers import SentenceTransformer, CrossEncoder
+        print("🔍 [AICandidateGenerator] Loading Sentence Transformer…")
+        self.model = SentenceTransformer(self.model_name)
+        print("🔍 [AICandidateGenerator] Loading Cross-Encoder…")
+        self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
     def load_data(self):
         print(f"Loading data from {self.poi_file}...")
@@ -159,14 +156,36 @@ class AICandidateGenerator:
         else:
              query = "Popular tourist attractions in Cairo and Giza"
 
-        # 2. Semantic Search
-        print(f"AI Semantic Query: '{query}'")
-        query_embedding = self.model.encode([query])
-        similarities = cosine_similarity(query_embedding, self.embeddings)[0]
-        self.df['Semantic_Score'] = similarities
+        # 2. Semantic Search (via Qdrant)
+        print(f"📡 [AICandidateGenerator] Semantic Search for: '{query}'")
+        query_vector = self.model.encode(query).tolist()
         
-        # 3. Filter & Rank
-        candidates = self.df.copy()
+        try:
+            search_result = self.client.query_points(
+                collection_name=self.collection_name,
+                query=query_vector,
+                limit=top_k * 2
+            ).points
+        except:
+            search_result = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=query_vector,
+                limit=top_k * 2
+            )
+
+        # Convert hits to DataFrame
+        rows = []
+        for hit in search_result:
+            row = hit.payload
+            row['Semantic_Score'] = hit.score
+            row['id'] = hit.id
+            # Rename columns to match internal expectations
+            row['Entry cost (EGP)'] = row.get('Entry cost (EGP)', 0)
+            rows.append(row)
+            
+        candidates = pd.DataFrame(rows)
+        if candidates.empty:
+            return candidates
         
         # Budget Filter
         # Access budget_daily safely
