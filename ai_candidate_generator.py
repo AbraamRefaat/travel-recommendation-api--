@@ -14,7 +14,9 @@ class AICandidateGenerator:
         self.client = None
         
         from qdrant_client import QdrantClient
-        self.client = QdrantClient(host=os.environ.get("QDRANT_HOST", "localhost"), port=int(os.environ.get("QDRANT_PORT", 6333)))
+        host = os.environ.get("QDRANT_HOST", "localhost")
+        port = int(os.environ.get("QDRANT_PORT", 6333))
+        self.client = QdrantClient(host=host, port=port, https=(port == 443))
         
         # Share model if provided, otherwise load fresh
         from sentence_transformers import CrossEncoder

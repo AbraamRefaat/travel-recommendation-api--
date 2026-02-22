@@ -79,7 +79,9 @@ class DataLoader:
         self.df = None
         self.pois: List[POI] = []
         from qdrant_client import QdrantClient
-        self.client = QdrantClient(host=os.environ.get("QDRANT_HOST", "localhost"), port=int(os.environ.get("QDRANT_PORT", 6333)))
+        host = os.environ.get("QDRANT_HOST", "localhost")
+        port = int(os.environ.get("QDRANT_PORT", 6333))
+        self.client = QdrantClient(host=host, port=port, https=(port == 443))
 
     def load_data(self):
         print(f"📡 [DataLoader] Loading data from Qdrant collection '{self.collection_name}'...")

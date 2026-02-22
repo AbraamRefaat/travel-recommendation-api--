@@ -39,7 +39,8 @@ def init_interest_search() -> None:
     host = os.environ.get("QDRANT_HOST", "localhost")
     port = int(os.environ.get("QDRANT_PORT", 6333))
     _collection_name = os.environ.get("QDRANT_COLLECTION", "pois")
-    _qdrant_client = QdrantClient(host=host, port=port)
+    print(f"🔍 [InterestSearch] Connecting to Qdrant at {host}:{port}...")
+    _qdrant_client = QdrantClient(host=host, port=port, https=(port == 443))
 
     print("🔍 [InterestSearch] Loading Sentence Transformer…")
     _st_model = SentenceTransformer("all-MiniLM-L6-v2")
