@@ -551,13 +551,13 @@ except ImportError:
     from ai_candidate_generator import AICandidateGenerator
 
 class TouristRecommendationSystem:
-    def __init__(self, collection_name: str = "pois"):
+    def __init__(self, collection_name: str = "pois", model=None):
         self.loader = DataLoader(collection_name)
         self.loader.load_data()
         
         # Initialize AI Generator
         try:
-            self.ai_gen = AICandidateGenerator(excel_file)
+            self.ai_gen = AICandidateGenerator(collection_name, shared_model=model)
             self.use_ai = True
         except Exception as e:
             print(f"Warning: Could not initialize AI model ({e}). Falling back to basic filter.")
