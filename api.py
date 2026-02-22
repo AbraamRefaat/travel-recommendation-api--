@@ -107,52 +107,47 @@ def broadcast_server():
 # are still loading in the background.
 interest_search_ready = False
 
-def _load_interest_search_bg():
-    """Background thread: loads Sentence Transformer + encodes all POIs."""
-    global interest_search_ready
+def _initialize_application_bg():
+    """Background startup: Load all models once and initialize the system."""
+    global system, interest_search_ready
     try:
+        # 1. Initialize semantic search + model loading
+        print("🔍 [Startup] Initializing Interest Search & Loading Models…")
         init_interest_search()
+        
+        # 2. Get shared model
+        from interest_search import get_st_model
+        shared_model = get_st_model()
+        
+        # 3. Initialize main recommendation system with shared model
+        print("📡 [Startup] Connecting to Qdrant & Initializing System…")
+        from tourist_recommendation_system import TouristRecommendationSystem
+        system = TouristRecommendationSystem("pois", model=shared_model)
+        
         interest_search_ready = True
-        print("✅ [InterestSearch] Embeddings ready — /search-by-interest is live!")
-    except Exception as ie:
-        print(f"⚠️  [InterestSearch] Could not initialise: {ie}")
+        print("✅ [Startup] Application fully initialized and ready!")
+    except Exception as e:
+        print(f"❌ [Startup] Initialization failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 @app.on_event("startup")
 def startup():
-    global system
     print("=" * 60)
     print("🚀 Starting Tourist Recommendation API")
     print("=" * 60)
     
-    # Get and display local IPs
-    local_ips = get_local_ips()
-    if local_ips:
-        print("\n📱 Connect your phone to the same network and use:")
-        for ip in local_ips:
-            print(f"   http://{ip}:8000")
-        print()
+    # 1. Start background initialization immediately
+    init_thread = threading.Thread(target=_initialize_application_bg, daemon=True)
+    init_thread.start()
     
-    try:
-        print("📡 Connecting to Qdrant...")
-        system = TouristRecommendationSystem("pois")
-        print("✅ System ready!")
-        print("=" * 60)
-        
-        # Start broadcast thread for discovery
-        broadcast_thread = threading.Thread(target=broadcast_server, daemon=True)
-        broadcast_thread.start()
-        print("📡 Broadcasting server presence for automatic discovery...")
-        print("=" * 60)
-
-        # ── New: load embeddings in background so healthcheck passes instantly ──
-        interest_thread = threading.Thread(target=_load_interest_search_bg, daemon=True)
-        interest_thread.start()
-        print("🔍 [InterestSearch] Loading embeddings in background…")
-        
-    except Exception as e:
-        print(f"❌ ERROR: Failed to load system: {e}")
-        print("=" * 60)
-        raise
+    # 2. Start broadcast thread
+    broadcast_thread = threading.Thread(target=broadcast_server, daemon=True)
+    broadcast_thread.start()
+    
+    print("📡 Application starting in non-blocking mode.")
+    print("📡 Health check /health is live.")
+    print("=" * 60)
 
 # ============================================================================
 # 5. HELPER - Convert POI object to dict
@@ -413,17 +408,13 @@ def root():
 
 @app.get("/health")
 def health():
-    """Detailed health check"""
-    if system is None:
-        return {
-            "status": "initializing",
-            "system_ready": False
-        }
-    
+    """Satisfy Railway health check immediately."""
+    status = "healthy" if (system and interest_search_ready) else "initializing"
     return {
-        "status": "healthy",
-        "system_ready": True,
-        "pois_loaded": len(system.loader.pois)
+        "status": status,
+        "system_ready": system is not None,
+        "interest_search_ready": interest_search_ready,
+        "pois_loaded": len(system.loader.pois) if system else 0
     }
 
 # ============================================================================

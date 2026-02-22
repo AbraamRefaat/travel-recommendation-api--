@@ -54,6 +54,12 @@ def init_interest_search() -> None:
 
     print(f"✅ [InterestSearch] Ready — Connected to Qdrant collection '{_collection_name}'.")
 
+def get_st_model() -> SentenceTransformer:
+    return _st_model
+
+def get_qdrant_client() -> QdrantClient:
+    return _qdrant_client
+
 
 # ---------------------------------------------------------------------------
 # STEP 2  —  Cosine-similarity search

@@ -7,7 +7,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import re
 
 class AICandidateGenerator:
-    def __init__(self, collection_name="pois", model_name='all-MiniLM-L6-v2'):
+    def __init__(self, collection_name="pois", model_name='all-MiniLM-L6-v2', shared_model=None):
         self.collection_name = collection_name
         self.model_name = model_name
         self.df = None
@@ -16,10 +16,16 @@ class AICandidateGenerator:
         from qdrant_client import QdrantClient
         self.client = QdrantClient(host=os.environ.get("QDRANT_HOST", "localhost"), port=int(os.environ.get("QDRANT_PORT", 6333)))
         
-        # We still need the Cross-Encoder for re-ranking
-        from sentence_transformers import SentenceTransformer, CrossEncoder
-        print("🔍 [AICandidateGenerator] Loading Sentence Transformer…")
-        self.model = SentenceTransformer(self.model_name)
+        # Share model if provided, otherwise load fresh
+        from sentence_transformers import CrossEncoder
+        if shared_model:
+             print("🔍 [AICandidateGenerator] Using shared Sentence Transformer.")
+             self.model = shared_model
+        else:
+             from sentence_transformers import SentenceTransformer
+             print("🔍 [AICandidateGenerator] Loading fresh Sentence Transformer…")
+             self.model = SentenceTransformer(self.model_name)
+             
         print("🔍 [AICandidateGenerator] Loading Cross-Encoder…")
         self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
