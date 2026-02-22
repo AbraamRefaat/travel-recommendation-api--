@@ -11,6 +11,7 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from google import genai as google_genai
 from dotenv import load_dotenv
+from qdrant_client import QdrantClient
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,8 +19,8 @@ load_dotenv()
 # ---------------------------------------------------------------------------
 # Module-level cache — populated once at startup
 # ---------------------------------------------------------------------------
-_poi_df: pd.DataFrame = None
-_poi_vectors: np.ndarray = None
+_qdrant_client: QdrantClient = None
+_collection_name: str = None
 _st_model: SentenceTransformer = None
 _gemini_client = None          # google.genai.Client instance
 
@@ -28,38 +29,20 @@ _gemini_client = None          # google.genai.Client instance
 # STEP 1  —  Load & embed at startup
 # ---------------------------------------------------------------------------
 
-def init_interest_search(excel_path: str = "Cairo_Giza_POI_Database_v3.xlsx") -> None:
+def init_interest_search() -> None:
     """
-    Load the POI Excel file, encode all rows with Sentence Transformer,
-    and cache everything. Also creates the Gemini client ONCE for speed.
+    Initialise Qdrant client, load Sentence Transformer, and Gemini client.
     """
-    global _poi_df, _poi_vectors, _st_model, _gemini_client
+    global _qdrant_client, _collection_name, _st_model, _gemini_client
 
-    print("🔍 [InterestSearch] Loading POI database…")
-    df = pd.read_excel(excel_path, sheet_name="Cairo & Giza POIs")
-    _poi_df = df
-
-    def build_text(row) -> str:
-        return (
-            f"{row.get('Name', '')}. "
-            f"Category: {row.get('Category', '')}. "
-            f"Sub-category: {row.get('Sub-category', '')}. "
-            f"Indoor/Outdoor: {row.get('Indoor / outdoor', '')}."
-        )
-
-    texts = df.apply(build_text, axis=1).tolist()
+    print("🔍 [InterestSearch] Initialising Qdrant client…")
+    host = os.environ.get("QDRANT_HOST", "localhost")
+    port = int(os.environ.get("QDRANT_PORT", 6333))
+    _collection_name = os.environ.get("QDRANT_COLLECTION", "pois")
+    _qdrant_client = QdrantClient(host=host, port=port)
 
     print("🔍 [InterestSearch] Loading Sentence Transformer…")
     _st_model = SentenceTransformer("all-MiniLM-L6-v2")
-
-    print(f"🔍 [InterestSearch] Encoding {len(texts)} POIs…")
-    _poi_vectors = _st_model.encode(
-        texts,
-        batch_size=64,
-        show_progress_bar=False,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-    )
 
     # Gemini client — created once, reused on every request
     api_key = os.environ.get("GEMINI_API_KEY")
@@ -69,46 +52,32 @@ def init_interest_search(excel_path: str = "Cairo_Giza_POI_Database_v3.xlsx") ->
     else:
         print("⚠️  [InterestSearch] GEMINI_API_KEY not set — Gemini disabled.")
 
-    print(f"✅ [InterestSearch] Ready — {len(texts)} POI embeddings cached.")
+    print(f"✅ [InterestSearch] Ready — Connected to Qdrant collection '{_collection_name}'.")
 
 
 # ---------------------------------------------------------------------------
 # STEP 2  —  Cosine-similarity search
 # ---------------------------------------------------------------------------
 
-def search_by_interest(user_query: str, top_k: int = 3) -> list[dict]:
-    if _poi_df is None or _poi_vectors is None or _st_model is None:
+def search_by_interest(user_query: str, top_k: int = 5) -> list[dict]:
+    if _qdrant_client is None or _st_model is None:
         raise RuntimeError(
-            "[InterestSearch] Not initialised yet. Retry in ~60 seconds."
+            "[InterestSearch] Not initialised yet. Ensure Qdrant is running."
         )
 
-    query_vector = _st_model.encode(
-        [user_query],
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-        show_progress_bar=False,
+    query_vector = _st_model.encode(user_query).tolist()
+
+    search_result = _qdrant_client.search(
+        collection_name=_collection_name,
+        query_vector=query_vector,
+        limit=top_k
     )
 
-    # Fast dot product (vectors already normalised)
-    sims = (query_vector @ _poi_vectors.T)[0]
-    top_indices = np.argpartition(sims, -top_k)[-top_k:]
-    top_indices = top_indices[np.argsort(sims[top_indices])[::-1]]
-
     results = []
-    for idx in top_indices:
-        row = _poi_df.iloc[idx].to_dict()
-        clean = {}
-        for k, v in row.items():
-            if isinstance(v, np.integer):
-                clean[k] = int(v)
-            elif isinstance(v, np.floating):
-                clean[k] = float(v)
-            elif not isinstance(v, (list, dict, np.ndarray)) and pd.isna(v):
-                clean[k] = None
-            else:
-                clean[k] = v
-        clean['id'] = int(idx)
-        results.append(clean)
+    for hit in search_result:
+        poi = hit.payload
+        poi['id'] = hit.id
+        results.append(poi)
 
     return results
 

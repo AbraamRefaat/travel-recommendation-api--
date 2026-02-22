@@ -11,6 +11,7 @@ import socket
 import threading
 import time
 import os
+import math
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -110,7 +111,7 @@ def _load_interest_search_bg():
     """Background thread: loads Sentence Transformer + encodes all POIs."""
     global interest_search_ready
     try:
-        init_interest_search("Cairo_Giza_POI_Database_v3.xlsx")
+        init_interest_search()
         interest_search_ready = True
         print("✅ [InterestSearch] Embeddings ready — /search-by-interest is live!")
     except Exception as ie:
@@ -170,7 +171,7 @@ def poi_to_dict(poi):
         "opening_hours": poi.opening_hours,
         "indoor_outdoor": poi.indoor_outdoor,
         "description": getattr(poi, 'description', ''),
-        "score": poi.score
+        "score": float(poi.score) if (poi.score is not None and not math.isnan(poi.score)) else 0.0
     }
 
 def event_to_dict(event):
@@ -248,9 +249,9 @@ def recommend(request: RecommendationRequest):
             "summary": {
                 "total_days": request.duration_days,
                 "total_pois": total_pois,
-                "total_cost_egp": round(total_cost, 2),
+                "total_cost_egp": round(total_cost, 2) if not math.isnan(total_cost) else 0.0,
                 "daily_budget": user_profile.budget_daily,
-                "budget_remaining": round((user_profile.budget_daily * request.duration_days) - total_cost, 2)
+                "budget_remaining": round((user_profile.budget_daily * request.duration_days) - total_cost, 2) if not math.isnan(total_cost) else 0.0
             }
         }
         
@@ -331,9 +332,9 @@ def recommend(request: RecommendationRequest):
                     response["summary"] = {
                         "total_days": request.duration_days,
                         "total_pois": total_pois,
-                        "total_cost_egp": round(total_cost, 2),
+                        "total_cost_egp": round(total_cost, 2) if not math.isnan(total_cost) else 0.0,
                         "daily_budget": user_profile.budget_daily,
-                        "budget_remaining": round((user_profile.budget_daily * request.duration_days) - total_cost, 2)
+                        "budget_remaining": round((user_profile.budget_daily * request.duration_days) - total_cost, 2) if not math.isnan(total_cost) else 0.0
                     }
                     response["interest_search"] = {
                         "query": request.specific_interest.strip(),

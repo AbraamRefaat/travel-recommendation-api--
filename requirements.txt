@@ -13,3 +13,4 @@ sentence-transformers==2.3.1
 scikit-learn==1.4.0
 google-genai>=1.0.0
 python-dotenv
+qdrant-client

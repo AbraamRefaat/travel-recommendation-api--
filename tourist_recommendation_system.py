@@ -113,7 +113,8 @@ class DataLoader:
             duration = self._parse_duration(row.get('Duration'))
 
             # Parse Cost
-            cost = pd.to_numeric(row.get('Cost'), errors='coerce') or 0.0
+            raw_cost = pd.to_numeric(row.get('Cost'), errors='coerce')
+            cost = float(raw_cost) if pd.notna(raw_cost) else 0.0
             
             # FORCE FOOD COST TO 0 (User Request: Variable cost, so assume 0 for planning)
             category = str(row.get('Category', 'General'))
@@ -554,7 +555,8 @@ class TouristRecommendationSystem:
                         poi = poi_map[idx]
                         # Inject AI Score
                         # Scale 0-1 to useful score, e.g. 0-10 base
-                        poi.score = row.get('Semantic_Score', 0) * 100.0 
+                        raw_semantic_score = row.get('Semantic_Score', 0)
+                        poi.score = float(raw_semantic_score) * 100.0 if pd.notna(raw_semantic_score) else 0.0
                         candidates.append(poi)
                         
                 print(f"AI returned {len(candidates)} valid candidates.")
