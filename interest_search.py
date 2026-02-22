@@ -149,8 +149,7 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> list[int
 
     # Try models in order — first available one wins
     _MODELS_TO_TRY = [
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
+        "gemini-3-flash-preview"
     ]
 
     last_error = None
