@@ -261,28 +261,90 @@ def recommend(request: RecommendationRequest):
         if request.specific_interest and request.specific_interest.strip():
             print(f"🔍 [InterestSearch] specific_interest: '{request.specific_interest}'")
             try:
+                # 1. Get 5 candidates
                 matched_pois = search_by_interest(
                     request.specific_interest.strip(), top_k=5
                 )
-                gemini_text = None
-                gemini_error = None
-                try:
-                    gemini_text = get_gemini_recommendation(
-                        request.specific_interest.strip(), matched_pois
-                    )
-                except Exception as ge:
-                    gemini_error = str(ge)
-                    print(f"⚠️  Gemini error: {ge}")
+                
+                # 2. Get top 2 IDs from Gemini
+                selected_ids = get_gemini_recommendation(
+                    request.specific_interest.strip(), matched_pois
+                )
+                print(f"✅ [InterestSearch] Gemini selected IDs: {selected_ids}")
 
-                response["interest_search"] = {
-                    "query": request.specific_interest.strip(),
-                    "places": matched_pois,
-                    "recommendation": gemini_text,
-                    "gemini_error": gemini_error,   # None when working, error string when not
-                }
-                print("✅ [InterestSearch] Results added to response.")
+                # 3. Fetch POI objects for these IDs
+                # Create a lookup map for all available POIs
+                full_poi_map = {p.id: p for p in system.loader.pois}
+                # Check for 'ID' column if DataLoader used it as the attribute name
+                if not any(selected_ids[0] == p.id for p in system.loader.pois if hasattr(p, 'id')):
+                   # Fallback search if ID mapping is different
+                   pass
+
+                injected_pois = []
+                for sid in selected_ids:
+                    # Search by .id or by custom .ID if we added it
+                    p_obj = full_poi_map.get(sid)
+                    if p_obj:
+                        injected_pois.append(p_obj)
+                
+                if injected_pois:
+                    print(f"💉 [InterestSearch] Injecting {len(injected_pois)} POIs into itinerary...")
+                    
+                    # 4. Distribute across days
+                    # POI 1 -> Day 1, POI 2 -> Day 2 (if exists)
+                    for i, poi in enumerate(injected_pois):
+                        day_num = i + 1
+                        if day_num > request.duration_days:
+                            day_num = 1 # Fallback to day 1 if single day trip
+                        
+                        # Get current list of POI objects for this day
+                        # Note: raw_itinerary[day] contains event dicts with a "poi" object
+                        if day_num in raw_itinerary:
+                            current_day_pois = [e["poi"] for e in raw_itinerary[day_num]]
+                            # Avoid duplicates
+                            if any(poi.id == p.id for p in current_day_pois):
+                                continue
+                            
+                            current_day_pois.append(poi)
+                            
+                            # 5. Re-schedule this day
+                            print(f"🕒 [InterestSearch] Re-scheduling Day {day_num}...")
+                            # generate_timed_itinerary takes Dict[int, List[POI]]
+                            temp_plan = {day_num: current_day_pois}
+                            new_day_schedule = system.scheduler.generate_timed_itinerary(temp_plan, user_profile)
+                            
+                            # Update the itinerary
+                            raw_itinerary[day_num] = new_day_schedule[day_num]
+
+                    # 6. Re-calculate full response and summary
+                    # Since we modified raw_itinerary, we rebuild the result dict
+                    result = {}
+                    total_cost = 0.0
+                    total_pois = 0
+                    for day, events in raw_itinerary.items():
+                        result[str(day)] = [event_to_dict(e) for e in events]
+                        for event in events:
+                            total_cost += event["poi"].cost
+                            total_pois += 1
+                    
+                    response["itinerary"] = result
+                    response["summary"] = {
+                        "total_days": request.duration_days,
+                        "total_pois": total_pois,
+                        "total_cost_egp": round(total_cost, 2),
+                        "daily_budget": user_profile.budget_daily,
+                        "budget_remaining": round((user_profile.budget_daily * request.duration_days) - total_cost, 2)
+                    }
+                    response["interest_search"] = {
+                        "query": request.specific_interest.strip(),
+                        "selected_ids": selected_ids,
+                        "status": "Injected into itinerary"
+                    }
+
             except Exception as ise:
-                print(f"⚠️  [InterestSearch] Skipped: {ise}")
+                print(f"⚠️  [InterestSearch] Injection failed: {ise}")
+                import traceback
+                traceback.print_exc()
 
         return response
         

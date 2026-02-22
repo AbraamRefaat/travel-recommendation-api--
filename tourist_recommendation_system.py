@@ -121,7 +121,7 @@ class DataLoader:
                 cost = 0.0
 
             poi = POI(
-                id=idx,
+                id=int(row.get('ID', idx)),
                 name=str(row.get('Name', 'Unknown')),
                 lat=lat,
                 lon=lon,

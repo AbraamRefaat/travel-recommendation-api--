@@ -107,6 +107,7 @@ def search_by_interest(user_query: str, top_k: int = 3) -> list[dict]:
                 clean[k] = None
             else:
                 clean[k] = v
+        clean['id'] = int(idx)
         results.append(clean)
 
     return results
@@ -116,20 +117,20 @@ def search_by_interest(user_query: str, top_k: int = 3) -> list[dict]:
 # STEP 3  —  Gemini recommendation (new google-genai SDK)
 # ---------------------------------------------------------------------------
 
-def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> str:
+def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> list[int]:
     if _gemini_client is None:
         raise EnvironmentError(
             "GEMINI_API_KEY is not set or Gemini client was not initialised."
         )
 
-    # Compact POI block
+    # Compact POI block with ID
     lines = []
     for i, p in enumerate(top_pois, 1):
+        # Prefer the 'ID' column if it exists, otherwise use index-based id
+        pid = p.get('ID') or p.get('id')
         lines.append(
-            f"{i}. {p.get('Name', 'N/A')} | "
+            f"ID: {pid} | {p.get('Name', 'N/A')} | "
             f"{p.get('Category', '')} / {p.get('Sub-category', '')} | "
-            f"Cost: {p.get('Entry cost (EGP)', 'N/A')} EGP | "
-            f"Hours: {p.get('Opening hours', 'N/A')} | "
             f"{p.get('Indoor / outdoor', '')}"
         )
 
@@ -137,22 +138,19 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> str:
     lines_block = "\n".join(lines)
 
     prompt = (
-        f"You are an Expert Local Guide in Cairo with deep knowledge of Egyptian history, culture, and hidden gems. "
-        f"A traveler has expressed interest in: \"{user_query}\".\n\n"
-        f"Based on their interest, evaluate the following top-matching places in Cairo & Giza:\n"
-        f"{lines_block}\n\n"
-        f"Your Task:\n"
-        f"1. Start with a brief, high-energy 1-sentence introduction that acknowledges their interest.\n"
-        f"2. For each place, provide a 2-3 sentence recommendation using this structure:\n"
-        f"   - **[Place Name]**: Explain exactly why it fits their interest of \"{user_query}\".\n"
-        f"   - Include a 'Pro Tip' (e.g., best time to visit, a hidden corner, or what to avoid).\n"
-        f"3. End with a short 'Guide's Final Word' on how to make the most of this specific collection of places.\n\n"
-        f"Style Guide: Professional, enthusiastic, culturally rich, and structured with Markdown bolding and bullet points. Be concise but impactful."
+        f"Analyze the traveler's interest: \"{user_query}\"\n\n"
+        f"Here are 5 potential places with their IDs:\n{lines_block}\n\n"
+        "Your Task:\n"
+        "1. Select exactly TWO (2) places from the list that best match the user's interest.\n"
+        "2. Return ONLY the IDs of these 2 places in the following strict JSON format:\n"
+        "{\"best_ids\": [ID1, ID2]}\n"
+        "Do not include any other text, reasoning, or markdown formatting outside the JSON."
     )
 
     # Try models in order — first available one wins
     _MODELS_TO_TRY = [
-        "gemini-3-flash-preview",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
     ]
 
     last_error = None
@@ -162,7 +160,16 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> str:
                 model=model_name,
                 contents=prompt,
             )
-            return response.text
+            text = response.text.strip()
+            # Clean possible markdown wrap
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0].strip()
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0].strip()
+            
+            import json
+            data = json.loads(text)
+            return data.get("best_ids", [])[:2]
         except Exception as e:
             last_error = e
             continue
