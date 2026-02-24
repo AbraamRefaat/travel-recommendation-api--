@@ -1,0 +1,16 @@
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+torch
+torchvision  
+torchaudio
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+pandas==2.1.4
+numpy==1.26.3
+openpyxl==3.1.2
+sentence-transformers==2.3.1
+scikit-learn==1.4.0
+google-genai>=1.0.0
+python-dotenv
+qdrant-client
