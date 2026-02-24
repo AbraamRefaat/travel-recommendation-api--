@@ -48,8 +48,8 @@ def init_interest_search() -> None:
     # Gemini client — created once, reused on every request
     api_key = os.environ.get("GEMINI_API_KEY")
     if api_key:
-        # Explicitly set api_version to 'v1' to avoid 404 errors with flash models in some environments
-        _gemini_client = google_genai.Client(api_key=api_key, http_options={'api_version': 'v1'})
+        # We removed the forced 'v1' api_version to allow the SDK to select the best one for each model.
+        _gemini_client = google_genai.Client(api_key=api_key)
         print("✅ [InterestSearch] Gemini client ready (google-genai SDK).")
     else:
         print("⚠️  [InterestSearch] GEMINI_API_KEY not set — Gemini disabled.")
@@ -136,13 +136,17 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> list[int
 
     # Try models in order — first available one wins
     _MODELS_TO_TRY = [
-        "gemini-3-flash-preview",
-        "gemini-1.5-flash"
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-3-flash-preview", # User requested to keep this
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro"
     ]
 
     last_error = None
     for model_name in _MODELS_TO_TRY:
         try:
+            print(f"📡 [InterestSearch] Prompting Gemini with model '{model_name}'...")
             response = _gemini_client.models.generate_content(
                 model=model_name,
                 contents=prompt,
@@ -158,6 +162,7 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> list[int
             data = json.loads(text)
             return data.get("best_ids", [])[:2]
         except Exception as e:
+            print(f"⚠️  [InterestSearch] Model '{model_name}' failed: {e}")
             last_error = e
             continue
 
