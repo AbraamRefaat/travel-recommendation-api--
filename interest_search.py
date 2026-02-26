@@ -67,37 +67,94 @@ def get_qdrant_client() -> QdrantClient:
 # STEP 2  —  Cosine-similarity search
 # ---------------------------------------------------------------------------
 
+def extract_interests(user_query: str) -> list[str]:
+    """
+    Use Gemini to extract a list of distinct interests from a user query.
+    Example: "visit places on Nile and eat Koshary" -> ["visit places on Nile", "eat Koshary"]
+    """
+    if _gemini_client is None:
+        # Fallback if Gemini is not available
+        return [user_query]
+
+    prompt = (
+        f"Analyze the following traveler's request: \"{user_query}\"\n\n"
+        "Your Task:\n"
+        "1. Extract distinct travel interests or activities from the request.\n"
+        "2. Return ONLY a JSON object with a list of interests like this:\n"
+        "{\"interests\": [\"interest 1\", \"interest 2\"]}\n"
+        "3. If there is only one interest, return it in the list.\n"
+        "Do not include any other text or reasoning."
+    )
+
+    _MODELS_TO_TRY = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    
+    for model_name in _MODELS_TO_TRY:
+        try:
+            print(f"📡 [InterestSearch] Extracting interests with model '{model_name}'...")
+            response = _gemini_client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+            )
+            text = response.text.strip()
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0].strip()
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0].strip()
+            
+            import json
+            data = json.loads(text)
+            interests = data.get("interests", [])
+            if interests:
+                print(f"✅ [InterestSearch] Extracted interests: {interests}")
+                return interests
+        except Exception as e:
+            print(f"⚠️  [InterestSearch] Interest extraction failed for '{model_name}': {e}")
+            continue
+    
+    return [user_query]
+
 def search_by_interest(user_query: str, top_k: int = 5) -> list[dict]:
     if _qdrant_client is None or _st_model is None:
         raise RuntimeError(
             "[InterestSearch] Not initialised yet. Ensure Qdrant is running."
         )
 
-    query_vector = _st_model.encode(user_query).tolist()
+    # 1. Extract multiple interests if present
+    interests = extract_interests(user_query)
+    
+    all_results = []
+    seen_ids = set()
 
-    try:
-        # Use query_points (modern API)
-        search_result = _qdrant_client.query_points(
-            collection_name=_collection_name,
-            query=query_vector,
-            limit=top_k
-        ).points
-    except AttributeError:
-        # Fallback to search (older API)
-        search_result = _qdrant_client.search(
-            collection_name=_collection_name,
-            query_vector=query_vector,
-            limit=top_k
-        )
+    # 2. Search for each interest separately
+    for interest in interests:
+        query_vector = _st_model.encode(interest).tolist()
+        try:
+            search_result = _qdrant_client.query_points(
+                collection_name=_collection_name,
+                query=query_vector,
+                limit=top_k
+            ).points
+        except AttributeError:
+            search_result = _qdrant_client.search(
+                collection_name=_collection_name,
+                query_vector=query_vector,
+                limit=top_k
+            )
+        
+        for hit in search_result:
+            poi_id = hit.id
+            if poi_id not in seen_ids:
+                poi = hit.payload
+                poi['id'] = poi_id
+                # Track which interest this result was matched for (optional, for debugging)
+                poi['_matched_for'] = interest 
+                all_results.append(poi)
+                seen_ids.add(poi_id)
 
-    results = []
-    for hit in search_result:
-        poi = hit.payload
-        # Compatibility: ensure 'id' is in the payload for other modules
-        poi['id'] = hit.id
-        results.append(poi)
-
-    return results
+    # 3. If we have multiple interests, we might have too many results.
+    # We should ensure we have at least 5 but maybe limit the total to something reasonable like 10
+    # to avoid overwhelming Gemini, while keeping variety.
+    return all_results[:10] if len(interests) > 1 else all_results[:top_k]
 
 
 # ---------------------------------------------------------------------------
@@ -126,11 +183,12 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> list[int
 
     prompt = (
         f"Analyze the traveler's interest: \"{user_query}\"\n\n"
-        f"Here are 5 potential places with their IDs:\n{lines_block}\n\n"
+        f"Here are top-matching potential places with their IDs:\n{lines_block}\n\n"
         "Your Task:\n"
-        "1. Select exactly TWO (2) places from the list that best match the user's interest.\n"
-        "2. Return ONLY the IDs of these 2 places in the following strict JSON format:\n"
-        "{\"best_ids\": [ID1, ID2]}\n"
+        "1. Select the BEST places (max 3) from the list that collectively cover the traveler's interests.\n"
+        "2. If the user has multiple interests (e.g., 'places on Nile' AND 'eat Koshary'), ensure you select at least one place for each interest part.\n"
+        "3. Return ONLY the IDs of these places in the following strict JSON format:\n"
+        "{\"best_ids\": [ID1, ID2, ...]}\n"
         "Do not include any other text, reasoning, or markdown formatting outside the JSON."
     )
 
@@ -160,7 +218,8 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> list[int
             
             import json
             data = json.loads(text)
-            return data.get("best_ids", [])[:2]
+            # Return up to 3 best IDs
+            return data.get("best_ids", [])[:3]
         except Exception as e:
             print(f"⚠️  [InterestSearch] Model '{model_name}' failed: {e}")
             last_error = e

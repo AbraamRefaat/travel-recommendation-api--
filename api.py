@@ -257,12 +257,12 @@ def recommend(request: RecommendationRequest):
         if request.specific_interest and request.specific_interest.strip():
             print(f"🔍 [InterestSearch] specific_interest: '{request.specific_interest}'")
             try:
-                # 1. Get 5 candidates
+                # 1. Get up to 10 candidates (increased to handle multi-interest)
                 matched_pois = search_by_interest(
                     request.specific_interest.strip(), top_k=5
                 )
                 
-                # 2. Get top 2 IDs from Gemini
+                # 2. Get top IDs from Gemini (can return up to 3)
                 selected_ids = get_gemini_recommendation(
                     request.specific_interest.strip(), matched_pois
                 )
