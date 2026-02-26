@@ -86,7 +86,7 @@ def extract_interests(user_query: str) -> list[str]:
         "Do not include any other text or reasoning."
     )
 
-    _MODELS_TO_TRY = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    _MODELS_TO_TRY = ["gemini-3-flash-preview"]
     
     for model_name in _MODELS_TO_TRY:
         try:
@@ -194,11 +194,7 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> list[int
 
     # Try models in order — first available one wins
     _MODELS_TO_TRY = [
-        "gemini-3-flash-preview",
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
-        "gemini-1.5-flash-latest",
-        "gemini-1.5-pro"
+        "gemini-3-flash-preview"
     ]
 
     last_error = None
