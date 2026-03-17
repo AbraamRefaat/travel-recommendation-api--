@@ -69,6 +69,42 @@ class POI:
     score: float = 0.0 # Dynamic score for the current user
     distance_from_last: float = 0.0 # Dynamic distance
 
+    @staticmethod
+    def from_payload(point_id, payload):
+        """Construct a POI object dynamically from a Qdrant payload."""
+        lat_lon = payload.get('Latitude / Longitude', '0,0')
+        lat, lon = 0.0, 0.0
+        try:
+            parts = str(lat_lon).split(',')
+            lat, lon = float(parts[0].strip()), float(parts[1].strip())
+        except: pass
+
+        duration = 1.5
+        try:
+            d_str = str(payload.get('Estimated visit duration', '1.5'))
+            match = re.search(r"(\d+(\.\d+)?)", d_str)
+            if match: duration = float(match.group(1))
+        except: pass
+
+        cost = 0.0
+        try:
+            cost = float(payload.get('Entry cost (EGP)', 0))
+        except: pass
+
+        return POI(
+            id=int(point_id),
+            name=str(payload.get('Name', 'Unknown')),
+            lat=lat,
+            lon=lon,
+            category=str(payload.get('Category', 'Unknown')),
+            subcategory=str(payload.get('Sub-category', '')),
+            duration_hours=duration,
+            cost=cost,
+            opening_hours=str(payload.get('Opening hours', '09:00 - 17:00')),
+            indoor_outdoor=str(payload.get('Indoor / outdoor', 'Both')),
+            description=f"{payload.get('Category')} - {payload.get('Sub-category')}"
+        )
+
 # --- Components ---
 
 class DataLoader:
@@ -85,9 +121,12 @@ class DataLoader:
         self.client = QdrantClient(host=host, port=port, https=(port == 443))
 
     def load_data(self):
-        print(f"📡 [DataLoader] Loading data from Qdrant collection '{self.collection_name}'...")
+        """Loading data is now dynamic from Qdrant. No Excel needed."""
+        print(f"📡 [DataLoader] Refreshing data from Qdrant collection '{self.collection_name}'...")
         try:
-            # Scroll through all points in Qdrant
+            self.pois = []
+            # In a truly stateless app, we could skip pre-loading, but keeping it 
+            # for the current ranker/optimizer logic which expects a base list.
             points, _ = self.client.scroll(
                 collection_name=self.collection_name,
                 limit=1000,
@@ -96,44 +135,11 @@ class DataLoader:
             )
             
             for p in points:
-                row = p.payload
-                # Matches the payload structure from GUI ingestion
-                lat_lon = row.get('Latitude / Longitude', '0,0')
-                lat, lon = 0.0, 0.0
-                try:
-                    parts = str(lat_lon).split(',')
-                    lat, lon = float(parts[0]), float(parts[1])
-                except: pass
-
-                duration = 1.5
-                try:
-                    d_str = str(row.get('Estimated visit duration', '1.5'))
-                    match = re.search(r"(\d+(\.\d+)?)", d_str)
-                    if match: duration = float(match.group(1))
-                except: pass
-
-                cost = float(row.get('Entry cost (EGP)', 0))
-                
-                poi = POI(
-                    id=int(p.id),
-                    name=str(row.get('Name', 'Unknown')),
-                    lat=lat,
-                    lon=lon,
-                    category=str(row.get('Category', 'Unknown')),
-                    subcategory=str(row.get('Sub-category', '')),
-                    duration_hours=duration,
-                    cost=cost,
-                    opening_hours=str(row.get('Opening hours', '09:00 - 17:00')),
-                    indoor_outdoor=str(row.get('Indoor / outdoor', 'Both')),
-                    description=f"{row.get('Category')} - {row.get('Sub-category')}"
-                )
-                self.pois.append(poi)
+                self.pois.append(POI.from_payload(p.id, p.payload))
             
             print(f"✅ [DataLoader] Loaded {len(self.pois)} POIs from Qdrant.")
         except Exception as e:
-            print(f"❌ [DataLoader] Error loading from Qdrant: {e}. Falling back to Excel if possible.")
-            # Optional: Add Excel fallback here if needed, but for now we want to go Excel-free.
-            pass
+            print(f"❌ [DataLoader] Error loading from Qdrant: {e}.")
 
     def _parse_pois(self):
         for idx, row in self.df.iterrows():
@@ -578,20 +584,16 @@ class TouristRecommendationSystem:
             print("1. AI Filtering Candidates (Semantic Search)...")
             try:
                 # 1. Get Top Candidates from AI
-                ai_results = self.ai_gen.generate_candidates_for_user(user, top_k=100)
+                # This now returns Qdrant hits with payloads included
+                ai_results_df = self.ai_gen.generate_candidates_for_user(user, top_k=100)
                 
-                # 2. Map back to POI objects using ID (Index)
-                # Create a quick lookup map
-                poi_map = {p.id: p for p in self.loader.pois}
-                
-                for idx, row in ai_results.iterrows():
-                    if idx in poi_map:
-                        poi = poi_map[idx]
-                        # Inject AI Score
-                        # Scale 0-1 to useful score, e.g. 0-10 base
-                        raw_semantic_score = row.get('Semantic_Score', 0)
-                        poi.score = float(raw_semantic_score) * 100.0 if pd.notna(raw_semantic_score) else 0.0
-                        candidates.append(poi)
+                for _, row in ai_results_df.iterrows():
+                    # Construct POI directly from the Qdrant payload results
+                    poi = POI.from_payload(row['id'], row)
+                    # Inject AI Score
+                    raw_semantic_score = row.get('Semantic_Score', 0)
+                    poi.score = float(raw_semantic_score) * 100.0 if pd.notna(raw_semantic_score) else 0.0
+                    candidates.append(poi)
                         
                 print(f"AI returned {len(candidates)} valid candidates.")
                 

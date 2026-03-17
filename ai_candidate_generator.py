@@ -12,8 +12,7 @@ class AICandidateGenerator:
         self.model_name = model_name
         self.df = None
         self.client = None
-        self.poi_file = "Cairo_Giza_POI_Database_v3.xlsx"
-        self.cache_file = "embeddings_cache.pkl"
+        # Removed Excel and Cache dependencies
         self.preferences = {}
         
         from qdrant_client import QdrantClient
@@ -35,76 +34,16 @@ class AICandidateGenerator:
         self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
     def load_data(self):
-        print(f"Loading data from {self.poi_file}...")
-        if not os.path.exists(self.poi_file):
-            raise FileNotFoundError(f"File not found: {self.poi_file}")
-            
-        self.df = pd.read_excel(self.poi_file)
-        self.df.columns = [str(c).strip() for c in self.df.columns]
-        
-        # Ensure critical columns exist or are created
-        if 'Description' not in self.df.columns:
-            self.df['Description'] = self.df['Name'].astype(str) + " " + self.df['Category'].fillna('') + " " + self.df['Sub-category'].fillna('')
-        
-        # Parse Coordinates dynamically
-        if 'Latitude' not in self.df.columns:
-             # Try to find a column with "Lat" in it
-            coord_col = next((c for c in self.df.columns if "Lat" in c and "Long" in c), None)
-            if coord_col:
-                # Helper to parse "29.9792, 31.1342"
-                def parse_c(x):
-                    try:
-                        pts = str(x).split(',')
-                        return float(pts[0]), float(pts[1])
-                    except:
-                        return None, None
-                        
-                lat_lon = self.df[coord_col].apply(parse_c)
-                self.df['Latitude'] = lat_lon.apply(lambda x: x[0])
-                self.df['Longitude'] = lat_lon.apply(lambda x: x[1])
-
-        self.df['Entry cost (EGP)'] = pd.to_numeric(self.df['Entry cost (EGP)'], errors='coerce').fillna(0)
-        
-        # FORCE FOOD COST TO 0
-        if 'Category' in self.df.columns:
-             self.df.loc[self.df['Category'].astype(str).str.lower() == 'food', 'Entry cost (EGP)'] = 0
+        """Excel loading is disabled. Data is now dynamic from Qdrant."""
+        pass
 
     def load_model_and_embeddings(self):
+        """Embedding cache is disabled. Qdrant handles vector storage."""
         print("Loading AI Model (SentenceTransformer)...")
         self.model = SentenceTransformer(self.model_name)
         # Load Cross-Encoder for Re-Ranking
         print("Loading Cross-Encoder (ms-marco-MiniLM-L-6-v2)...")
         self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-        
-        # Check cache validity
-        cache_valid = False
-        if os.path.exists(self.cache_file):
-            print("Found embedding cache.")
-            try:
-                with open(self.cache_file, 'rb') as f:
-                    data = pickle.load(f)
-                    # Simple version check: compare number of rows
-                    if len(data) == len(self.df):
-                        self.embeddings = data
-                        cache_valid = True
-                        print("Cache loaded successfully.")
-                    else:
-                        print("Cache outdated (row count mismatch). Re-computing...")
-            except (EOFError, pickle.UnpicklingError, Exception) as e:
-                print(f"Cache corrupted or unreadable ({e}). Re-computing...")
-                cache_valid = False
-        
-        if not cache_valid:
-            print("Computing Embeddings (this happens once)...")
-            # Create rich text representation for semantic search
-            # "Name: XYZ. Category: History. Sub: Pharaonic. Context: Outdoor, 3 hours..."
-            corpus = self.df.apply(lambda row: f"Name: {row['Name']}. Category: {row.get('Category','')}. Type: {row.get('Sub-category','')}. {row.get('Indoor / outdoor','')}", axis=1).tolist()
-            
-            self.embeddings = self.model.encode(corpus, show_progress_bar=True)
-            
-            with open(self.cache_file, 'wb') as f:
-                pickle.dump(self.embeddings, f)
-            print("Embeddings computed and cached.")
 
     # --- INPUT ---
     def collect_input_interactive(self):

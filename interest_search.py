@@ -1,10 +1,3 @@
-"""
-Interest-Based POI Search Module
-=================================
-Uses the new `google-genai` SDK (>=1.0.0) which replaces the deprecated
-`google-generativeai` package and supports gemini-1.5-flash via the v1 API.
-"""
-
 import os
 import pandas as pd
 import numpy as np
@@ -22,8 +15,7 @@ load_dotenv()
 _qdrant_client: QdrantClient = None
 _collection_name: str = None
 _st_model: SentenceTransformer = None
-_gemini_client = None          # google.genai.Client instance
-
+_gemini_client = None          
 
 # ---------------------------------------------------------------------------
 # STEP 1  —  Load & embed at startup
@@ -56,6 +48,7 @@ def init_interest_search() -> None:
 
     print(f"✅ [InterestSearch] Ready — Connected to Qdrant collection '{_collection_name}'.")
 
+
 def get_st_model() -> SentenceTransformer:
     return _st_model
 
@@ -68,10 +61,7 @@ def get_qdrant_client() -> QdrantClient:
 # ---------------------------------------------------------------------------
 
 def extract_interests(user_query: str) -> list[str]:
-    """
-    Use Gemini to extract a list of distinct interests from a user query.
-    Example: "visit places on Nile and eat Koshary" -> ["visit places on Nile", "eat Koshary"]
-    """
+    
     if _gemini_client is None:
         # Fallback if Gemini is not available
         return [user_query]
