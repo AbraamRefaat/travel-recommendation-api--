@@ -262,19 +262,26 @@ def recommend(request: RecommendationRequest):
                     request.specific_interest.strip(), top_k=5
                 )
                 
+                if not matched_pois:
+                    print("⚠️  [InterestSearch] No POIs found for query")
+                    raise Exception("No matching POIs found")
+                
                 # 2. Get top IDs from Gemini (can return up to 3)
-                selected_ids = get_gemini_recommendation(
-                    request.specific_interest.strip(), matched_pois
-                )
-                print(f"✅ [InterestSearch] Gemini selected IDs: {selected_ids}")
+                selected_ids = []
+                try:
+                    selected_ids = get_gemini_recommendation(
+                        request.specific_interest.strip(), matched_pois
+                    )
+                    print(f"✅ [InterestSearch] Gemini selected IDs: {selected_ids}")
+                except Exception as gemini_error:
+                    print(f"⚠️  [InterestSearch] Gemini ranking failed: {gemini_error}")
+                    # Fallback: use top 3 from semantic search
+                    selected_ids = [p['id'] for p in matched_pois[:3]]
+                    print(f"🔄 [InterestSearch] Using top semantic search results: {selected_ids}")
 
                 # 3. Fetch POI objects for these IDs
                 # Create a lookup map for all available POIs
                 full_poi_map = {p.id: p for p in system.loader.pois}
-                # Check for 'ID' column if DataLoader used it as the attribute name
-                if not any(selected_ids[0] == p.id for p in system.loader.pois if hasattr(p, 'id')):
-                   # Fallback search if ID mapping is different
-                   pass
 
                 injected_pois = []
                 for sid in selected_ids:
@@ -282,6 +289,8 @@ def recommend(request: RecommendationRequest):
                     p_obj = full_poi_map.get(sid)
                     if p_obj:
                         injected_pois.append(p_obj)
+                    else:
+                        print(f"⚠️  [InterestSearch] POI with ID {sid} not found in loader")
                 
                 if injected_pois:
                     print(f"💉 [InterestSearch] Injecting {len(injected_pois)} POIs into itinerary...")
