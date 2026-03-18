@@ -31,8 +31,30 @@ def init_interest_search() -> None:
     host = os.environ.get("QDRANT_HOST", "localhost")
     port = int(os.environ.get("QDRANT_PORT", 6333))
     _collection_name = os.environ.get("QDRANT_COLLECTION", "pois")
+    api_key = os.environ.get("QDRANT_API_KEY")
+    
     print(f"🔍 [InterestSearch] Connecting to Qdrant at {host}:{port}...")
-    _qdrant_client = QdrantClient(host=host, port=port, https=(port == 443))
+    
+    # Try to connect with API key if provided, otherwise use basic connection
+    try:
+        if api_key:
+            print("🔍 [InterestSearch] Using API key for Qdrant connection...")
+            _qdrant_client = QdrantClient(
+                host=host, 
+                port=port, 
+                api_key=api_key,
+                https=(port == 443 or port == 6333)
+            )
+        else:
+            print("🔍 [InterestSearch] Using basic Qdrant connection...")
+            _qdrant_client = QdrantClient(host=host, port=port, prefer_grpc=False)
+        
+        # Test the connection
+        collections = _qdrant_client.get_collections()
+        print(f"✅ [InterestSearch] Successfully connected to Qdrant. Collections: {[c.name for c in collections.collections]}")
+    except Exception as e:
+        print(f"❌ [InterestSearch] Failed to connect to Qdrant: {e}")
+        raise
 
     print("🔍 [InterestSearch] Loading Sentence Transformer…")
     _st_model = SentenceTransformer("all-MiniLM-L6-v2")
@@ -76,7 +98,11 @@ def extract_interests(user_query: str) -> list[str]:
         "Do not include any other text or reasoning."
     )
 
-    _MODELS_TO_TRY = ["gemini-3-flash-preview"]
+    _MODELS_TO_TRY = [
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash"
+    ]
     
     for model_name in _MODELS_TO_TRY:
         try:
@@ -109,14 +135,22 @@ def search_by_interest(user_query: str, top_k: int = 5) -> list[dict]:
             "[InterestSearch] Not initialised yet. Ensure Qdrant is running."
         )
 
+    print(f"🔍 [InterestSearch] Starting search for: '{user_query}'")
+    
     # 1. Extract multiple interests if present
-    interests = extract_interests(user_query)
+    try:
+        interests = extract_interests(user_query)
+        print(f"🔍 [InterestSearch] Extracted interests: {interests}")
+    except Exception as e:
+        print(f"⚠️  [InterestSearch] Interest extraction failed, using raw query: {e}")
+        interests = [user_query]
     
     all_results = []
     seen_ids = set()
 
     # 2. Search for each interest separately
     for interest in interests:
+        print(f"🔍 [InterestSearch] Searching for interest: '{interest}'")
         query_vector = _st_model.encode(interest).tolist()
         try:
             search_result = _qdrant_client.query_points(
@@ -124,26 +158,33 @@ def search_by_interest(user_query: str, top_k: int = 5) -> list[dict]:
                 query=query_vector,
                 limit=top_k
             ).points
+            print(f"✅ [InterestSearch] Found {len(search_result)} results for '{interest}'")
         except AttributeError:
+            print(f"🔄 [InterestSearch] Using legacy search method...")
             search_result = _qdrant_client.search(
                 collection_name=_collection_name,
                 query_vector=query_vector,
                 limit=top_k
             )
+            print(f"✅ [InterestSearch] Found {len(search_result)} results for '{interest}'")
+        except Exception as e:
+            print(f"❌ [InterestSearch] Search failed for '{interest}': {e}")
+            import traceback
+            traceback.print_exc()
+            continue
         
         for hit in search_result:
             poi_id = hit.id
             if poi_id not in seen_ids:
                 poi = hit.payload
                 poi['id'] = poi_id
-                # Track which interest this result was matched for (optional, for debugging)
                 poi['_matched_for'] = interest 
                 all_results.append(poi)
                 seen_ids.add(poi_id)
 
+    print(f"✅ [InterestSearch] Total unique results: {len(all_results)}")
+    
     # 3. If we have multiple interests, we might have too many results.
-    # We should ensure we have at least 5 but maybe limit the total to something reasonable like 10
-    # to avoid overwhelming Gemini, while keeping variety.
     return all_results[:10] if len(interests) > 1 else all_results[:top_k]
 
 
@@ -184,7 +225,9 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> list[int
 
     # Try models in order — first available one wins
     _MODELS_TO_TRY = [
-        "gemini-3-flash-preview"
+        "gemini-3-flash-preview",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash"
     ]
 
     last_error = None

@@ -118,7 +118,23 @@ class DataLoader:
         from qdrant_client import QdrantClient
         host = os.environ.get("QDRANT_HOST", "localhost")
         port = int(os.environ.get("QDRANT_PORT", 6333))
-        self.client = QdrantClient(host=host, port=port, https=(port == 443))
+        api_key = os.environ.get("QDRANT_API_KEY")
+        
+        try:
+            if api_key:
+                print(f"📡 [DataLoader] Connecting to Qdrant at {host}:{port} with API key...")
+                self.client = QdrantClient(
+                    host=host, 
+                    port=port, 
+                    api_key=api_key,
+                    https=(port == 443 or port == 6333)
+                )
+            else:
+                print(f"📡 [DataLoader] Connecting to Qdrant at {host}:{port}...")
+                self.client = QdrantClient(host=host, port=port, prefer_grpc=False)
+        except Exception as e:
+            print(f"❌ [DataLoader] Failed to connect to Qdrant: {e}")
+            raise
 
     def load_data(self):
         """Loading data is now dynamic from Qdrant. No Excel needed."""
