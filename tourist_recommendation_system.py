@@ -226,9 +226,9 @@ class CandidateGenerator:
     def filter_candidates(self, user: UserProfile) -> List[POI]:
         candidates = []
         for poi in self.all_pois:
-            # 1. Budget Hard Constraint - Limit single POI to 40% of daily budget
-            # This prevents expensive items from consuming entire budget
-            MAX_POI_COST_RATIO = 0.40
+            # 1. Budget Hard Constraint - Limit single POI to 50% of daily budget
+            # Relaxed from 40% to 50% for better recall
+            MAX_POI_COST_RATIO = 0.50
             
             if poi.cost > (user.budget_daily * MAX_POI_COST_RATIO):
                 continue
@@ -390,8 +390,8 @@ class ItineraryOptimizer:
                     if poi.id in used_poi_ids:
                         continue
                     
-                    # Hard Constraints with 5% safety buffer to prevent budget violations
-                    BUDGET_SAFETY_FACTOR = 0.95
+                    # Hard Constraints with 2% safety buffer (relaxed from 5% for better recall)
+                    BUDGET_SAFETY_FACTOR = 0.98
                     daily_budget_limit = user.budget_daily * BUDGET_SAFETY_FACTOR
                     total_budget_limit = user.budget_total * BUDGET_SAFETY_FACTOR
                     

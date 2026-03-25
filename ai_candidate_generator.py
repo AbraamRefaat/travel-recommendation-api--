@@ -106,12 +106,20 @@ class AICandidateGenerator:
         else:
              query = "Popular tourist attractions in Cairo and Giza"
 
-        # 2. Semantic Search (via Qdrant)
+        # 2. Semantic Search (via Qdrant) with Hybrid Approach
         print(f"📡 [AICandidateGenerator] Semantic Search for: '{query}'")
         query_vector = self.model.encode(query).tolist()
         
-        # Increased search depth for better recall (28% -> 50%+)
-        SEARCH_DEPTH_MULTIPLIER = 4
+        # Aggressive search depth for maximum recall (6x multiplier)
+        SEARCH_DEPTH_MULTIPLIER = 6
+        
+        # Also generate keyword-based queries for hybrid search
+        keyword_queries = []
+        if interests:
+            # Extract top 3 interests as keywords
+            top_interests = sorted(interests.items(), key=lambda x: x[1], reverse=True)[:3]
+            keyword_query = " ".join([interest for interest, _ in top_interests])
+            keyword_queries.append(keyword_query)
         
         try:
             search_result = self.client.query_points(
@@ -156,6 +164,17 @@ class AICandidateGenerator:
                 sub = row.get('Sub-category', '')
                 row['Description'] = f"{name} - {cat} - {sub}".strip(" -")
 
+            # Keyword matching boost for hybrid search
+            if interests:
+                keyword_boost = 0.0
+                poi_text = f"{row.get('Name', '')} {row.get('Category', '')} {row.get('Sub-category', '')} {row.get('Description', '')}".lower()
+                for interest, weight in interests.items():
+                    if interest.lower() in poi_text:
+                        keyword_boost += weight * 0.1  # 10% boost per matching interest
+                row['Keyword_Boost'] = keyword_boost
+            else:
+                row['Keyword_Boost'] = 0.0
+
             # Rename columns to match internal expectations
             row['Entry cost (EGP)'] = float(row.get('Entry cost (EGP)', 0))
             rows.append(row)
@@ -163,6 +182,10 @@ class AICandidateGenerator:
         candidates = pd.DataFrame(rows)
         if candidates.empty:
             return candidates
+        
+        # Apply hybrid scoring: Semantic Score + Keyword Boost
+        if 'Keyword_Boost' in candidates.columns:
+            candidates['Semantic_Score'] = candidates['Semantic_Score'] + candidates['Keyword_Boost']
         
         # Budget Filter
         # Access budget_daily safely
@@ -201,8 +224,8 @@ class AICandidateGenerator:
         # --- RE-RANKING STEP ---
         # 1. Take top N candidates from the fast Bi-Encoder model
         #    (We take slightly more than top_k to allow re-ordering)
-        # Increased to 3x for better recall
-        top_candidates = candidates.sort_values(by='Semantic_Score', ascending=False).head(top_k * 3)
+        # Increased to 4x for maximum recall
+        top_candidates = candidates.sort_values(by='Semantic_Score', ascending=False).head(top_k * 4)
         
         if not top_candidates.empty:
             print(f"Re-ranking top {len(top_candidates)} candidates with Cross-Encoder...")
