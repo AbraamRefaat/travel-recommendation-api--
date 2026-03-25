@@ -226,9 +226,11 @@ class CandidateGenerator:
     def filter_candidates(self, user: UserProfile) -> List[POI]:
         candidates = []
         for poi in self.all_pois:
-            # 1. Budget Hard Constraint (Individual POI check - optional, usually check daily limit later)
-            # But let's check if a SINGLE ticket exceeds the ENTIRE daily budget (unlikely but possible)
-            if poi.cost > user.budget_daily:
+            # 1. Budget Hard Constraint - Limit single POI to 40% of daily budget
+            # This prevents expensive items from consuming entire budget
+            MAX_POI_COST_RATIO = 0.40
+            
+            if poi.cost > (user.budget_daily * MAX_POI_COST_RATIO):
                 continue
             
             if not user.willingness_to_pay_entry and poi.cost > 0:
@@ -388,9 +390,13 @@ class ItineraryOptimizer:
                     if poi.id in used_poi_ids:
                         continue
                     
-                    # Hard Constraints
-                    if (daily_cost_spent + poi.cost) > user.budget_daily: continue
-                    if (total_cost_spent + poi.cost) > user.budget_total: continue
+                    # Hard Constraints with 5% safety buffer to prevent budget violations
+                    BUDGET_SAFETY_FACTOR = 0.95
+                    daily_budget_limit = user.budget_daily * BUDGET_SAFETY_FACTOR
+                    total_budget_limit = user.budget_total * BUDGET_SAFETY_FACTOR
+                    
+                    if (daily_cost_spent + poi.cost) > daily_budget_limit: continue
+                    if (total_cost_spent + poi.cost) > total_budget_limit: continue
                     
                     # Time Constraint (POIDuration + TravelBuffer)
                     # Estimate travel from LAST SELECTED location

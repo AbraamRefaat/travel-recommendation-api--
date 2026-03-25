@@ -110,17 +110,20 @@ class AICandidateGenerator:
         print(f"📡 [AICandidateGenerator] Semantic Search for: '{query}'")
         query_vector = self.model.encode(query).tolist()
         
+        # Increased search depth for better recall (28% -> 50%+)
+        SEARCH_DEPTH_MULTIPLIER = 4
+        
         try:
             search_result = self.client.query_points(
                 collection_name=self.collection_name,
                 query=query_vector,
-                limit=top_k * 2
+                limit=top_k * SEARCH_DEPTH_MULTIPLIER
             ).points
         except:
             search_result = self.client.search(
                 collection_name=self.collection_name,
                 query_vector=query_vector,
-                limit=top_k * 2
+                limit=top_k * SEARCH_DEPTH_MULTIPLIER
             )
 
         # Convert hits to DataFrame
@@ -198,7 +201,8 @@ class AICandidateGenerator:
         # --- RE-RANKING STEP ---
         # 1. Take top N candidates from the fast Bi-Encoder model
         #    (We take slightly more than top_k to allow re-ordering)
-        top_candidates = candidates.sort_values(by='Semantic_Score', ascending=False).head(top_k * 2)
+        # Increased to 3x for better recall
+        top_candidates = candidates.sort_values(by='Semantic_Score', ascending=False).head(top_k * 3)
         
         if not top_candidates.empty:
             print(f"Re-ranking top {len(top_candidates)} candidates with Cross-Encoder...")
