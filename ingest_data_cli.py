@@ -14,12 +14,13 @@ COLUMNS = [
     "ID",
     "Name",
     "Latitude / Longitude",
+    "Opening time",
+    "Closing time",
     "Category",
     "Sub-category",
     "Estimated visit duration",
-    "Entry cost (EGP)",
-    "Opening hours",
     "Indoor / outdoor",
+    "Price range",
 ]
 
 VECTOR_SIZE = 384
@@ -30,14 +31,19 @@ COLLECTION_NAME = os.environ.get("QDRANT_COLLECTION", "pois")
 EXCEL_FILE = "Cairo_Giza_POI_Database_v3.xlsx"
 
 def build_sentence(row: dict) -> str:
-    name = row.get("Name", "Unknown")
-    cat = row.get("Category", "")
-    sub = row.get("Sub-category", "")
-    indoor = row.get("Indoor / outdoor", "")
-    hours = row.get("Opening hours", "")
-    cost = row.get("Entry cost (EGP)", "")
-    duration = row.get("Estimated visit duration", "")
-    location = row.get("Latitude / Longitude", "")
+    name        = row.get("Name", "Unknown")
+    cat         = row.get("Category", "")
+    sub         = row.get("Sub-category", "")
+    indoor      = row.get("Indoor / outdoor", "")
+    open_time   = row.get("Opening time", "")
+    close_time  = row.get("Closing time", "")
+    price_range = row.get("Price range", "")
+    duration    = row.get("Estimated visit duration", "")
+    location    = row.get("Latitude / Longitude", "")
+
+    # Map price range symbols to readable text
+    price_labels = {"$": "Budget", "$$": "Moderate", "$$$": "Luxury"}
+    price_text = price_labels.get(str(price_range).strip(), str(price_range).strip())
 
     parts = [f"{name} is a {cat}"]
     if sub:
@@ -47,10 +53,10 @@ def build_sentence(row: dict) -> str:
         parts.append(f"It is {indoor}.")
     if duration:
         parts.append(f"Estimated visit duration: {duration}.")
-    if hours:
-        parts.append(f"Opening hours: {hours}.")
-    if cost:
-        parts.append(f"Entry cost: {cost} EGP.")
+    if open_time or close_time:
+        parts.append(f"Opening hours: {open_time} - {close_time}.")
+    if price_text:
+        parts.append(f"Price range: {price_text}.")
     if location:
         parts.append(f"Location: {location}.")
     return " ".join(parts)

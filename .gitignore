@@ -54,13 +54,11 @@ logs/
 # Batch files (Windows specific)
 *.bat
 
-# Don't ignore the POI database - we need it for deployment
-!Cairo_Giza_POI_Database_v3.xlsx
 
 # Don't ignore deployment files
 !Procfile
-!railway.json
 !requirements.txt
 
-# GUI Ingestion Tool (Local Only)
-data_ingestion_gui/
+# Keys and credentials
+*.pem
+

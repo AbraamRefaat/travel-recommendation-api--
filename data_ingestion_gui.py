@@ -43,12 +43,13 @@ COLUMNS = [
     "ID",
     "Name",
     "Latitude / Longitude",
+    "Opening time",
+    "Closing time",
     "Category",
     "Sub-category",
     "Estimated visit duration",
-    "Entry cost (EGP)",
-    "Opening hours",
     "Indoor / outdoor",
+    "Price range",
 ]
 
 VECTOR_SIZE = 384          # all-MiniLM-L6-v2 output dimension
@@ -84,14 +85,19 @@ FONT_MONO   = ("Consolas", 9)
 
 def build_sentence(row: dict) -> str:
     """Convert a row dict into an embeddable natural-language sentence."""
-    name     = row.get("Name", "Unknown")
-    cat      = row.get("Category", "")
-    sub      = row.get("Sub-category", "")
-    indoor   = row.get("Indoor / outdoor", "")
-    hours    = row.get("Opening hours", "")
-    cost     = row.get("Entry cost (EGP)", "")
-    duration = row.get("Estimated visit duration", "")
-    location = row.get("Latitude / Longitude", "")
+    name        = row.get("Name", "Unknown")
+    cat         = row.get("Category", "")
+    sub         = row.get("Sub-category", "")
+    indoor      = row.get("Indoor / outdoor", "")
+    open_time   = row.get("Opening time", "")
+    close_time  = row.get("Closing time", "")
+    price_range = row.get("Price range", "")
+    duration    = row.get("Estimated visit duration", "")
+    location    = row.get("Latitude / Longitude", "")
+
+    # Map price range symbols to readable text
+    price_labels = {"$": "Budget", "$$": "Moderate", "$$$": "Luxury"}
+    price_text = price_labels.get(str(price_range).strip(), str(price_range).strip())
 
     parts = [f"{name} is a {cat}"]
     if sub:
@@ -101,10 +107,10 @@ def build_sentence(row: dict) -> str:
         parts.append(f"It is {indoor}.")
     if duration:
         parts.append(f"Estimated visit duration: {duration}.")
-    if hours:
-        parts.append(f"Opening hours: {hours}.")
-    if cost:
-        parts.append(f"Entry cost: {cost} EGP.")
+    if open_time or close_time:
+        parts.append(f"Opening hours: {open_time} - {close_time}.")
+    if price_text:
+        parts.append(f"Price range: {price_text}.")
     if location:
         parts.append(f"Location: {location}.")
     return " ".join(parts)
@@ -511,7 +517,7 @@ class DataIngestionApp(tk.Tk):
             missing = [c for c in COLUMNS if c not in found]
 
             info_text = (
-                f"Rows: {len(df)}    Columns matched: {len(found)}/9"
+                f"Rows: {len(df)}    Columns matched: {len(found)}/10"
                 + (f"    ⚠ Missing: {', '.join(missing)}" if missing else "")
             )
             self._excel_info.configure(text=info_text, fg=TEXT_MAIN)

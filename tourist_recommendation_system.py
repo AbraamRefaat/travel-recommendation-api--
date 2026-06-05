@@ -2,72 +2,93 @@
 import pandas as pd
 import numpy as np
 import os
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple, Optional, Union
 from dataclasses import dataclass, field
 from datetime import datetime
 import re
 import math
 
+try:
+    from .engine_config import CONFIG
+except ImportError:
+    from engine_config import CONFIG
+
+
+# --- Shared geo / travel helpers (single source of truth) ---
+
+EARTH_RADIUS_KM = 6371.0
+
+
+def haversine_km(lat1, lon1, lat2, lon2) -> float:
+    """Great-circle distance in km between two lat/lon points."""
+    if None in (lat1, lon1, lat2, lon2):
+        return 0.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (math.sin(dlat / 2) ** 2
+         + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2)
+    return EARTH_RADIUS_KM * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def travel_hours(dist_km: float) -> float:
+    """Convert a distance to a travel-time estimate using the configured speed/clamps."""
+    raw = dist_km / CONFIG.travel_speed_kmh if CONFIG.travel_speed_kmh > 0 else 0.0
+    return max(CONFIG.min_travel_hours, min(raw, CONFIG.max_travel_hours))
+
+
 # --- Data Structures ---
+
+def _tier_budget_map() -> Dict[str, float]:
+    """Read daily budget limits per tier from env vars, with sensible fallbacks."""
+    return {
+        "budget":   float(os.environ.get("BUDGET_DAILY_BUDGET",   1500)),
+        "moderate": float(os.environ.get("BUDGET_DAILY_MODERATE", 3500)),
+        "luxury":   float(os.environ.get("BUDGET_DAILY_LUXURY",  10000)),
+    }
+
+def _default_geo_radius() -> float:
+    return float(os.environ.get("DEFAULT_GEO_RADIUS_KM", 20.0))
 
 @dataclass
 class UserProfile:
     """
     Stores user preferences and constraints.
     """
-    interests: Dict[str, float] = field(default_factory=dict)  # {"History": 0.8, "Food": 0.5}
-    budget_daily: float = 1000.0
-    budget_tier: str = "moderate" # "budget", "moderate", "luxury"
-    budget_total: float = 5000.0 # Optional global limit
+    interests: Dict[str, float] = field(default_factory=dict)
+    budget_tier: str = "moderate"           # "budget", "moderate", "luxury"
+    budget_daily: Optional[float] = None    # derived from tier if not provided
     duration_days: int = 1
-    pace: str = "moderate" # "relaxed", "moderate", "packed"
-    start_time: str = "09:00"
-    end_time: str = "17:00"
-    geo_center: Optional[Tuple[float, float]] = None # (lat, lon)
-    geo_radius_km: float = 20.0
+    pace: str = "moderate"                  # "relaxed", "moderate", "packed"
+    geo_center: Optional[Tuple[float, float]] = None
+    geo_radius_km: float = field(default_factory=_default_geo_radius)
     willingness_to_pay_entry: bool = True
-    indoor_preference: str = "neutral" # "indoor", "outdoor", "neutral"
+    indoor_preference: str = "neutral"      # "indoor", "outdoor", "neutral"
 
     def __post_init__(self):
-        # Map budget_tier to budget_daily if not explicitly overridden by a custom value
-        # (Assuming the default 1000.0 is a placeholder, or we just overwrite it based on tier)
-        # To be safe, let's enforce tier Logic if it seems like a default.
-        
-        tier_map = {
-            "budget": 1500.0,
-            "moderate": 3500.0,
-            "luxury": 10000.0
-        }
-        
-        # If budget_daily is the default 1000.0, update it based on tier
-        if self.budget_daily == 1000.0 and self.budget_tier.lower() in tier_map:
-            self.budget_daily = tier_map[self.budget_tier.lower()]
-            
-        # Update total budget estimate
-        if self.budget_total == 5000.0:
-             self.budget_total = self.budget_daily * self.duration_days * 1.5
-
-        # Normalize pace
+        self.budget_tier = self.budget_tier.lower()
         self.pace = self.pace.lower()
+        if self.budget_daily is None:
+            tier_map = _tier_budget_map()
+            self.budget_daily = tier_map.get(self.budget_tier, tier_map["moderate"])
 
 @dataclass
 class POI:
     """
     Represents a single Point of Interest.
     """
-    id: int
+    id: Union[int, str]   # can be int or UUID string depending on ingestion method
     name: str
     lat: float
     lon: float
     category: str
     subcategory: str
     duration_hours: float
-    cost: float
+    price_range: str     # raw value: "$", "$$", or "$$$"
     opening_hours: str
     indoor_outdoor: str
     description: str = ""
-    score: float = 0.0 # Dynamic score for the current user
-    distance_from_last: float = 0.0 # Dynamic distance
+    score: float = 0.0
+    distance_from_last: float = 0.0
 
     @staticmethod
     def from_payload(point_id, payload):
@@ -79,28 +100,38 @@ class POI:
             lat, lon = float(parts[0].strip()), float(parts[1].strip())
         except: pass
 
-        duration = 1.5
+        duration = CONFIG.default_visit_hours
         try:
-            d_str = str(payload.get('Estimated visit duration', '1.5'))
+            d_str = str(payload.get('Estimated visit duration', ''))
             match = re.search(r"(\d+(\.\d+)?)", d_str)
             if match: duration = float(match.group(1))
         except: pass
 
-        cost = 0.0
+        price_range = ""
         try:
-            cost = float(payload.get('Entry cost (EGP)', 0))
+            price_range = str(payload.get('Price range', '')).strip()
         except: pass
 
+        open_t  = str(payload.get('Opening time', ''))
+        close_t = str(payload.get('Closing time', ''))
+        opening = f"{open_t} - {close_t}" if (open_t or close_t) else ''
+
+        # Parse ID — support both integer IDs and UUID strings
+        try:
+            parsed_id = int(point_id)
+        except (ValueError, TypeError):
+            parsed_id = str(point_id)  # keep as UUID string
+
         return POI(
-            id=int(point_id),
+            id=parsed_id,
             name=str(payload.get('Name', 'Unknown')),
             lat=lat,
             lon=lon,
             category=str(payload.get('Category', 'Unknown')),
             subcategory=str(payload.get('Sub-category', '')),
             duration_hours=duration,
-            cost=cost,
-            opening_hours=str(payload.get('Opening hours', '09:00 - 17:00')),
+            price_range=price_range,
+            opening_hours=opening,
             indoor_outdoor=str(payload.get('Indoor / outdoor', 'Both')),
             description=f"{payload.get('Category')} - {payload.get('Sub-category')}"
         )
@@ -145,7 +176,7 @@ class DataLoader:
             # for the current ranker/optimizer logic which expects a base list.
             points, _ = self.client.scroll(
                 collection_name=self.collection_name,
-                limit=1000,
+                limit=CONFIG.qdrant_scroll_limit,
                 with_payload=True,
                 with_vectors=False
             )
@@ -168,14 +199,8 @@ class DataLoader:
             # Parse Duration (handle "2 hours", "1.5", etc.)
             duration = self._parse_duration(row.get('Duration'))
 
-            # Parse Cost
-            raw_cost = pd.to_numeric(row.get('Cost'), errors='coerce')
-            cost = float(raw_cost) if pd.notna(raw_cost) else 0.0
-            
-            # FORCE FOOD COST TO 0 (User Request: Variable cost, so assume 0 for planning)
             category = str(row.get('Category', 'General'))
-            if category.lower() == 'food':
-                cost = 0.0
+            price_range = str(row.get('Price range', '')).strip()
 
             poi = POI(
                 id=int(row.get('ID', idx)),
@@ -185,8 +210,8 @@ class DataLoader:
                 category=category,
                 subcategory=str(row.get('Sub-category', '')),
                 duration_hours=duration,
-                cost=cost,
-                opening_hours=str(row.get('Hours', '09:00 - 17:00')),
+                price_range=price_range,
+                opening_hours=str(row.get('Hours', '')),
                 indoor_outdoor=str(row.get('Type', 'Both')),
                 description=f"{row.get('Category')} - {row.get('Sub-category')}"
             )
@@ -203,18 +228,16 @@ class DataLoader:
             return None, None
 
     def _parse_duration(self, duration_val):
-        # Default to 1.5 hours if unknown
         if pd.isna(duration_val):
-            return 1.5
+            return CONFIG.default_visit_hours
         try:
-            # If it's a string like "2 hours", extract number
             val_str = str(duration_val).lower()
             match = re.search(r"(\d+(\.\d+)?)", val_str)
             if match:
                 return float(match.group(1))
-            return 1.5
+            return CONFIG.default_visit_hours
         except:
-            return 1.5
+            return CONFIG.default_visit_hours
 
 class CandidateGenerator:
     """
@@ -226,17 +249,7 @@ class CandidateGenerator:
     def filter_candidates(self, user: UserProfile) -> List[POI]:
         candidates = []
         for poi in self.all_pois:
-            # 1. Budget Hard Constraint - Limit single POI to 50% of daily budget
-            # Relaxed from 40% to 50% for better recall
-            MAX_POI_COST_RATIO = 0.50
-            
-            if poi.cost > (user.budget_daily * MAX_POI_COST_RATIO):
-                continue
-            
-            if not user.willingness_to_pay_entry and poi.cost > 0:
-                continue
-
-            # 2. Indoor/Outdoor Constraint (if strict)
+            # 1. Indoor/Outdoor Constraint (if strict)
             if user.indoor_preference != "neutral":
                 # If user wants Indoor, skip purely Outdoor places
                 # Data might say "Indoor", "Outdoor", "Both"
@@ -268,76 +281,89 @@ class POIRanker:
     def __init__(self):
         pass
 
+    PRICE_ORDER = {"$": 1, "$$": 2, "$$$": 3}
+
     def rank_pois(self, candidates: List[POI], user: UserProfile) -> List[POI]:
+        if not candidates:
+            return []
+
+        # --- Preserve the upstream AI/semantic relevance instead of discarding it. ---
+        # The AI generator stores its relevance in poi.score; normalise it to 0..1 so it
+        # can be blended on a comparable scale with the heuristic signals below.
+        semantic_raw = [p.score for p in candidates]
+        lo, hi = min(semantic_raw), max(semantic_raw)
+        span = (hi - lo) or 1.0
+
+        # Median visit duration drives the data-relative pace preference (no fixed thresholds).
+        durations = sorted(p.duration_hours for p in candidates)
+        median_duration = durations[len(durations) // 2]
+
         for poi in candidates:
-            score = 0.0
-            
-            # 1. Interest Match
-            matched_interest = False
+            semantic_norm = (poi.score - lo) / span  # 0..1
+            score = CONFIG.w_semantic * semantic_norm
+
+            # 1. Explicit interest match (category/subcategory/description keyword overlap)
             for interest, weight in user.interests.items():
-                if interest.lower() in poi.category.lower() or interest.lower() in poi.subcategory.lower():
-                    score += weight * 10.0
-                    matched_interest = True
-                
-                if interest.lower() in poi.description.lower():
-                    score += weight * 2.0
-            
-            # Base Score
-            if not matched_interest:
-                 if "History" in poi.category or "Pharaonic" in poi.subcategory:
-                     score += 2.0
-                 else:
-                     score += 1.0
+                il = interest.lower()
+                if il in poi.category.lower() or il in poi.subcategory.lower():
+                    score += weight * CONFIG.w_interest_category
+                if il in poi.description.lower():
+                    score += weight * CONFIG.w_interest_description
 
-            # 2. Cost Suitability (Smart Budget Logic)
-            if user.budget_tier == "budget":
-                if poi.cost < 100: score += 2.0
-                elif poi.cost > 300: score -= 2.0
-            elif user.budget_tier == "luxury":
-                if poi.cost > 500: score += 2.0
-                if poi.cost < 50: score -= 0.5
-            else: # moderate
-                 if 50 <= poi.cost <= 500: score += 1.0
+            # Neutral base so an item with no explicit keyword hit still survives on
+            # its semantic merit (no city- or theme-specific bias hardcoded here).
+            score += CONFIG.base_score_no_match
 
-            # 3. Duration Suitability based on Pace
-            # "Relaxed": Penalize short/quick items to avoid rushing? Or penalize too many items?
-            # Actually, for "Relaxed", we want FEWER items, so maybe we prefer longer, meaningful visits?
-            # For "Packed", we want MANY items, so short duration is fine.
-            
-            if user.pace == "relaxed":
-                # Prefer longer, deeper experiences
-                if poi.duration_hours > 2.0: score += 1.0
-                # Penalize quick stops slightly?
-                if poi.duration_hours < 1.0: score -= 0.5
-                
-            elif user.pace == "packed":
-                # Prefer shorter, quick hits
-                if poi.duration_hours < 2.0: score += 1.0
-                if poi.duration_hours > 4.0: score -= 1.0
-            
+            # 2. Price-tier suitability relative to the user's budget tier
+            pr = self.PRICE_ORDER.get(poi.price_range, 0)
+            if pr:
+                if user.budget_tier == "budget":
+                    if pr == 1:   score += CONFIG.price_match_bonus
+                    elif pr == 2: score += CONFIG.price_tolerate_bonus
+                    else:         score -= CONFIG.price_mismatch_penalty
+                elif user.budget_tier == "luxury":
+                    if pr == 3:   score += CONFIG.price_match_bonus
+                    elif pr == 2: score += CONFIG.price_tolerate_bonus
+                else:  # moderate
+                    if pr <= 2:   score += CONFIG.price_tolerate_bonus
+
+            # 3. Pace suitability — measured against the dataset's own median duration,
+            #    so "long" / "short" adapt to whatever data is loaded.
+            if user.pace == "relaxed" and poi.duration_hours >= median_duration:
+                score += CONFIG.price_tolerate_bonus
+            elif user.pace == "packed" and poi.duration_hours <= median_duration:
+                score += CONFIG.price_tolerate_bonus
+
             poi.score = score
 
-        # Sort descending
-        ranked = sorted(candidates, key=lambda x: x.score, reverse=True)
-        return ranked
+        return sorted(candidates, key=lambda x: x.score, reverse=True)
 
 class ItineraryOptimizer:
     """
-    Constructs a daily schedule ensuring time/budget constraints AND diversity.
+    Constructs a daily schedule ensuring time constraints AND diversity.
     """
     def __init__(self):
         pass
 
-    def _haversine(self, lat1, lon1, lat2, lon2):
-        if lat1 is None or lat2 is None: return 0.0
-        R = 6371
-        dlat = math.radians(lat2 - lat1)
-        dlon = math.radians(lon2 - lon1)
-        a = math.sin(dlat / 2) * math.sin(dlat / 2) + \
-            math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
-            math.sin(dlon / 2) * math.sin(dlon / 2)
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-        return R * c
+    def _get_day_window(self, pois: List[POI]):
+        """Derive day start/end from POIs' actual opening hours."""
+        opens, closes = [], []
+        for poi in pois:
+            try:
+                parts = poi.opening_hours.split(' - ')
+                oh, om = map(int, parts[0].strip().split(':'))
+                opens.append(oh + om / 60.0)
+                ch, cm = map(int, parts[1].strip().split(':'))
+                closes.append(ch + cm / 60.0)
+            except Exception:
+                pass
+        start = min(opens) if opens else CONFIG.default_day_start
+        end = max(closes) if closes else CONFIG.default_day_end
+        return start, end
+
+    def _max_items_for_day(self, pace: str) -> int:
+        """Fixed number of stops per day, driven by pace (overridable via env)."""
+        return CONFIG.max_items.get(pace, CONFIG.max_items["moderate"])
 
     def optimize_itinerary(self, ranked_candidates: List[POI], user: UserProfile) -> Dict[int, List[POI]]:
         """
@@ -346,180 +372,143 @@ class ItineraryOptimizer:
         - Next item: Score = OriginalScore - DiversityPenalty - DistancePenalty
         """
         itinerary = {}
-        
-        # Track global usage
-        total_cost_spent = 0.0
         used_poi_ids = set()
-        
-        # Start times
-        try:
-           h, m = map(int, user.start_time.split(':'))
-           start_h_float = h + m/60.0
-           endo_h, endo_m = map(int, user.end_time.split(':'))
-           end_h_float = endo_h + endo_m/60.0
-        except:
-           start_h_float = 9.0
-           end_h_float = 17.0
+
+        start_h_float, end_h_float = self._get_day_window(ranked_candidates)
+        max_items = self._max_items_for_day(user.pace)
 
         for day in range(1, user.duration_days + 1):
             day_pois = []
-            daily_cost_spent = 0.0
             current_time = start_h_float
-            last_location = user.geo_center # Start from hotel/center
+            last_location = user.geo_center  # Start from hotel/center
 
             # Track categories used TODAY for diversity
             day_category_counts = {}
 
-            # Determine max items based on pace
-            if user.pace == "relaxed":
-                max_items = 2
-            elif user.pace == "moderate":
-                max_items = 4 # "Balanced like 3" - giving a bit of flex, or set to 3. Let's say 4 to allow small items.
-                              # User said "Moderate to be balanced like 3". Let's stick to 3-4.
-                max_items = 3 
-            else: # packed
-                max_items = 99
-
             # While we have time in the day AND space in the schedule
             while current_time < end_h_float and len(day_pois) < max_items:
                 best_candidate = None
+                best_dist = 0.0
                 best_effective_score = -float('inf')
 
                 # Re-evaluate all valid candidates for this specific slot
                 for poi in ranked_candidates:
                     if poi.id in used_poi_ids:
                         continue
-                    
-                    # Hard Constraints with 2% safety buffer (relaxed from 5% for better recall)
-                    BUDGET_SAFETY_FACTOR = 0.98
-                    daily_budget_limit = user.budget_daily * BUDGET_SAFETY_FACTOR
-                    total_budget_limit = user.budget_total * BUDGET_SAFETY_FACTOR
-                    
-                    if (daily_cost_spent + poi.cost) > daily_budget_limit: continue
-                    if (total_cost_spent + poi.cost) > total_budget_limit: continue
-                    
-                    # Time Constraint (POIDuration + TravelBuffer)
-                    # Estimate travel from LAST SELECTED location
-                    dist_km = 0
-                    if last_location:
-                        dist_km = self._haversine(last_location[0], last_location[1], poi.lat, poi.lon)
-                    
-                    travel_time_h = max(0.25, dist_km / 20.0) # 20km/h avg
-                    if (current_time + poi.duration_hours + travel_time_h) > end_h_float:
-                        continue
-                    
-                    # --- SCORING ---
-                    # 1. Base Score
-                    effective_score = poi.score
-                    
-                    # 2. Diversity Penalty (Category Mix)
-                    # If we already have a "Museum", penalize next matching category heavily
-                    # Check broad category and subcategory
-                    penalty = 0.0
-                    for cat_str in [poi.category, poi.subcategory]:
-                        # Simple keyword check against already used
-                        for used_cat in day_category_counts:
-                            if used_cat in cat_str or cat_str in used_cat:
-                                penalty += 5.0 # Big penalty for repetition
-                    
-                    effective_score -= penalty
 
-                    # 3. Distance Penalty (Smart Routing)
-                    # Penalize far items to encourage clustering
-                    # e.g. -0.5 score per km
-                    effective_score -= (dist_km * 0.5)
+                    # Time Constraint (visit duration + travel buffer from last stop)
+                    dist_km = 0.0
+                    if last_location:
+                        dist_km = haversine_km(last_location[0], last_location[1], poi.lat, poi.lon)
+
+                    if (current_time + poi.duration_hours + travel_hours(dist_km)) > end_h_float:
+                        continue
+
+                    # --- SCORING ---
+                    effective_score = poi.score
+
+                    # Diversity penalty: escalates the more we repeat a category today.
+                    cat_key = f"{poi.category}|{poi.subcategory}"
+                    repeats = day_category_counts.get(cat_key, 0)
+                    effective_score -= repeats * CONFIG.diversity_penalty
+
+                    # Distance penalty encourages geographic clustering.
+                    effective_score -= dist_km * CONFIG.distance_penalty_per_km
 
                     if effective_score > best_effective_score:
                         best_effective_score = effective_score
                         best_candidate = poi
+                        best_dist = dist_km
 
-                # If no candidate found, break for the day
                 if not best_candidate:
                     break
-                
-                # Add best candidate
+
                 day_pois.append(best_candidate)
                 used_poi_ids.add(best_candidate.id)
-                
-                # Update State
-                daily_cost_spent += best_candidate.cost
-                total_cost_spent += best_candidate.cost
-                
-                # Update Time
-                dist_km = 0
-                if last_location:
-                    dist_km = self._haversine(last_location[0], last_location[1], best_candidate.lat, best_candidate.lon)
-                travel_h = max(0.25, dist_km / 20.0)
-                current_time += (best_candidate.duration_hours + travel_h)
-                
-                # Update Location
+
+                current_time += best_candidate.duration_hours + travel_hours(best_dist)
                 last_location = (best_candidate.lat, best_candidate.lon)
-                
-                # Update Diversity Counts
+
                 cat_key = f"{best_candidate.category}|{best_candidate.subcategory}"
                 day_category_counts[cat_key] = day_category_counts.get(cat_key, 0) + 1
-            
+
             itinerary[day] = day_pois
 
         return itinerary
 
 class Scheduler:
     """
-    Refines the daily itinerary by ordering POIs geographically (TSP-Greedy).
+    Refines the daily itinerary by ordering POIs geographically
+    (greedy nearest-neighbour seed + 2-opt improvement).
     """
     def __init__(self):
         pass
 
-    def _haversine(self, lat1, lon1, lat2, lon2):
-        if lat1 is None or lat2 is None: return 0.0
-        R = 6371  # Earth radius in km
-        dlat = math.radians(lat2 - lat1)
-        dlon = math.radians(lon2 - lon1)
-        a = math.sin(dlat / 2) * math.sin(dlat / 2) + \
-            math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * \
-            math.sin(dlon / 2) * math.sin(dlon / 2)
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-        return R * c
+    def _route_length(self, coords: List[Tuple[float, float]], start: Tuple[float, float] = None) -> float:
+        total = 0.0
+        prev = start
+        for c in coords:
+            if prev is not None:
+                total += haversine_km(prev[0], prev[1], c[0], c[1])
+            prev = c
+        return total
+
+    def _two_opt(self, pois: List[POI], start: Tuple[float, float] = None) -> List[POI]:
+        """Improve a route by repeatedly reversing segments that shorten total travel."""
+        if len(pois) < 4:
+            return pois
+        route = pois[:]
+        coords = lambda lst: [(p.lat, p.lon) for p in lst]
+        improved = True
+        while improved:
+            improved = False
+            best = self._route_length(coords(route), start)
+            for i in range(len(route) - 1):
+                for k in range(i + 1, len(route)):
+                    candidate = route[:i] + route[i:k + 1][::-1] + route[k + 1:]
+                    length = self._route_length(coords(candidate), start)
+                    if length + 1e-9 < best:
+                        route, best, improved = candidate, length, True
+        return route
 
     def route_day(self, pois: List[POI], start_coords: Tuple[float, float] = None) -> List[POI]:
-        """
-        Orders the POIs to minimize travel distance.
-        """
+        """Order POIs to minimize travel distance (greedy seed, then 2-opt)."""
         if not pois:
             return []
 
-        # Simple Greedy TSP
+        # 1. Greedy nearest-neighbour seed
         ordered_pois = []
-        # If no start location provided and we just picked first POI, use it as start
         remaining = pois[:]
-        
         if start_coords:
-             current_location = start_coords
+            current_location = start_coords
         else:
-             # Pick the highest ranked (first in list) as the anchor if no start
-             first = remaining.pop(0)
-             ordered_pois.append(first)
-             current_location = (first.lat, first.lon)
-        
+            first = remaining.pop(0)
+            ordered_pois.append(first)
+            current_location = (first.lat, first.lon)
+
         while remaining:
-            # Find nearest to current_location
-            nearest_poi = min(remaining, key=lambda p: self._haversine(current_location[0], current_location[1], p.lat, p.lon))
+            nearest_poi = min(
+                remaining,
+                key=lambda p: haversine_km(current_location[0], current_location[1], p.lat, p.lon),
+            )
             ordered_pois.append(nearest_poi)
             current_location = (nearest_poi.lat, nearest_poi.lon)
             remaining.remove(nearest_poi)
-            
-        return ordered_pois
+
+        # 2. 2-opt refinement
+        return self._two_opt(ordered_pois, start_coords)
+
+    def _parse_open_time(self, opening_hours: str) -> float:
+        """Parse opening time from 'HH:MM - HH:MM' string, return float hours."""
+        try:
+            h, m = map(int, opening_hours.split(' - ')[0].strip().split(':'))
+            return h + m / 60.0
+        except Exception:
+            return CONFIG.default_day_start
 
     def generate_timed_itinerary(self, optimized_plan: Dict[int, List[POI]], user: UserProfile) -> Dict[int, List[dict]]:
         final_itinerary = {}
-        
-        # Parse start time: "09:00" -> 9.0
-        try:
-            h, m = map(int, user.start_time.split(':'))
-            start_h_float = h + m/60.0
-        except:
-            start_h_float = 9.0
-        
+
         for day, pois in optimized_plan.items():
             if not pois:
                 final_itinerary[day] = []
@@ -527,24 +516,23 @@ class Scheduler:
 
             # 1. Route
             routed_pois = self.route_day(pois, user.geo_center)
-            
-            # 2. Assign Times
+
+            # 2. Assign Times — start from the earliest opening time among this day's POIs
             day_schedule = []
+            if routed_pois:
+                start_h_float = min(self._parse_open_time(p.opening_hours) for p in routed_pois)
+            else:
+                start_h_float = CONFIG.default_day_start
             current_time = start_h_float
             last_coords = user.geo_center
-            
+
             for i, poi in enumerate(routed_pois):
                 # Calc travel from last
                 travel_time = 0.0
                 if last_coords:
-                     dist = self._haversine(last_coords[0], last_coords[1], poi.lat, poi.lon)
-                     # Assume 20km/h avg speed in city traffic
-                     hours = dist / 20.0
-                     travel_time = max(0.25, min(hours, 1.5)) # clamp 15m to 1.5h
-                elif i > 0:
-                     # Fallback if no user center
-                     pass
-                
+                     dist = haversine_km(last_coords[0], last_coords[1], poi.lat, poi.lon)
+                     travel_time = travel_hours(dist)
+
                 # Arrival
                 arrival_time = current_time + travel_time
                 end_time = arrival_time + poi.duration_hours
@@ -651,17 +639,14 @@ class TouristRecommendationSystem:
 if __name__ == "__main__":
     # Test Run
     print("Initializing System...")
-    sys = TouristRecommendationSystem("Cairo_Giza_POI_Database_v3.xlsx")
+    sys = TouristRecommendationSystem("pois")
     
     # Define a test user: 3 days, likes History & Nature
     user = UserProfile(
         interests={"History": 0.9, "Nature": 0.6, "Nile": 0.4},
         budget_daily=2000.0,
-        budget_total=6000.0,
         duration_days=3,
         pace="moderate",
-        start_time="09:00",
-        end_time = "19:00",
         geo_center=(30.0444, 31.2357) # Downtown Cairo approx
     )
     
@@ -675,21 +660,14 @@ if __name__ == "__main__":
     print("       FINAL SUGGESTED ITINERARY       ")
     print("="*50)
     
-    total_cost = 0
     for day, events in itinerary.items():
         print(f"\n[ DAY {day} ]")
-        day_cost = 0
         for event in events:
             p = event['poi']
             print(f"  {event['start_time']} - {event['end_time']} : {p.name}")
             print(f"     -> {p.category} | {p.subcategory}")
-            print(f"     -> Cost: {p.cost} EGP")
+            print(f"     -> Price range: {p.price_range}")
+            print(f"     -> Opening: {p.opening_hours}")
             print(f"     -> Reason: {event['reason']}")
-            day_cost += p.cost
-        
-        print(f"  --> Daily Total: {day_cost} EGP")
-        total_cost += day_cost
-        
     print("="*50)
-    print(f"Trip Total Cost: {total_cost} EGP")
 

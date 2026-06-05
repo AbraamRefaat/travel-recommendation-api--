@@ -1,23 +1,16 @@
 import os
-import pandas as pd
-import numpy as np
 from sentence_transformers import SentenceTransformer
 from google import genai as google_genai
 from dotenv import load_dotenv
 from qdrant_client import QdrantClient
 
-# Load environment variables from .env file
 load_dotenv()
 
-# ---------------------------------------------------------------------------
-# Module-level cache — populated once at startup
-# ---------------------------------------------------------------------------
 _qdrant_client: QdrantClient = None
 _collection_name: str = None
 _st_model: SentenceTransformer = None
 _gemini_client = None          
 
-# ---------------------------------------------------------------------------
 # STEP 1  —  Load & embed at startup
 # ---------------------------------------------------------------------------
 
@@ -35,7 +28,6 @@ def init_interest_search() -> None:
     
     print(f"🔍 [InterestSearch] Connecting to Qdrant at {host}:{port}...")
     
-    # Try to connect with API key if provided, otherwise use basic connection
     try:
         if api_key:
             print("🔍 [InterestSearch] Using API key for Qdrant connection...")
@@ -49,8 +41,8 @@ def init_interest_search() -> None:
             print("🔍 [InterestSearch] Using basic Qdrant connection...")
             _qdrant_client = QdrantClient(host=host, port=port, prefer_grpc=False)
         
-        # Test the connection
         collections = _qdrant_client.get_collections()
+        
         print(f"✅ [InterestSearch] Successfully connected to Qdrant. Collections: {[c.name for c in collections.collections]}")
     except Exception as e:
         print(f"❌ [InterestSearch] Failed to connect to Qdrant: {e}")
@@ -82,110 +74,53 @@ def get_qdrant_client() -> QdrantClient:
 # STEP 2  —  Cosine-similarity search
 # ---------------------------------------------------------------------------
 
-def extract_interests(user_query: str) -> list[str]:
-    
-    if _gemini_client is None:
-        # Fallback if Gemini is not available
-        return [user_query]
-
-    prompt = (
-        f"Analyze the following traveler's request: \"{user_query}\"\n\n"
-        "Your Task:\n"
-        "1. Extract distinct travel interests or activities from the request.\n"
-        "2. Return ONLY a JSON object with a list of interests like this:\n"
-        "{\"interests\": [\"interest 1\", \"interest 2\"]}\n"
-        "3. If there is only one interest, return it in the list.\n"
-        "Do not include any other text or reasoning."
-    )
-
-    _MODELS_TO_TRY = [
-        "gemini-3-flash-preview",
-        "gemini-2.5-flash",
-        "gemini-2.0-flash"
-    ]
-    
-    for model_name in _MODELS_TO_TRY:
-        try:
-            print(f"📡 [InterestSearch] Extracting interests with model '{model_name}'...")
-            response = _gemini_client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-            )
-            text = response.text.strip()
-            if "```json" in text:
-                text = text.split("```json")[1].split("```")[0].strip()
-            elif "```" in text:
-                text = text.split("```")[1].split("```")[0].strip()
-            
-            import json
-            data = json.loads(text)
-            interests = data.get("interests", [])
-            if interests:
-                print(f"✅ [InterestSearch] Extracted interests: {interests}")
-                return interests
-        except Exception as e:
-            print(f"⚠️  [InterestSearch] Interest extraction failed for '{model_name}': {e}")
-            continue
-    
-    return [user_query]
-
 def search_by_interest(user_query: str, top_k: int = 5) -> list[dict]:
+    """
+    Search for POIs matching the user query using SentenceTransformer embeddings.
+    The raw query is passed directly to the model (no Gemini pre-processing),
+    which avoids an extra API round-trip and eliminates case-sensitivity issues
+    because the query is normalised to lowercase before encoding.
+    """
     if _qdrant_client is None or _st_model is None:
         raise RuntimeError(
             "[InterestSearch] Not initialised yet. Ensure Qdrant is running."
         )
 
     print(f"🔍 [InterestSearch] Starting search for: '{user_query}'")
-    
-    # 1. Extract multiple interests if present
+
+    normalised_query = user_query.strip().lower()
+
+    query_vector = _st_model.encode(normalised_query).tolist()
+
     try:
-        interests = extract_interests(user_query)
-        print(f"🔍 [InterestSearch] Extracted interests: {interests}")
+        search_result = _qdrant_client.query_points(
+            collection_name=_collection_name,
+            query=query_vector,
+            limit=top_k
+        ).points
+        print(f"✅ [InterestSearch] Found {len(search_result)} results")
+    except AttributeError:
+        print(f"🔄 [InterestSearch] Using legacy search method...")
+        search_result = _qdrant_client.search(
+            collection_name=_collection_name,
+            query_vector=query_vector,
+            limit=top_k
+        )
+        print(f"✅ [InterestSearch] Found {len(search_result)} results")
     except Exception as e:
-        print(f"⚠️  [InterestSearch] Interest extraction failed, using raw query: {e}")
-        interests = [user_query]
-    
+        print(f"❌ [InterestSearch] Search failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
     all_results = []
-    seen_ids = set()
+    for hit in search_result:
+        poi = hit.payload
+        poi['id'] = hit.id
+        all_results.append(poi)
 
-    # 2. Search for each interest separately
-    for interest in interests:
-        print(f"🔍 [InterestSearch] Searching for interest: '{interest}'")
-        query_vector = _st_model.encode(interest).tolist()
-        try:
-            search_result = _qdrant_client.query_points(
-                collection_name=_collection_name,
-                query=query_vector,
-                limit=top_k
-            ).points
-            print(f"✅ [InterestSearch] Found {len(search_result)} results for '{interest}'")
-        except AttributeError:
-            print(f"🔄 [InterestSearch] Using legacy search method...")
-            search_result = _qdrant_client.search(
-                collection_name=_collection_name,
-                query_vector=query_vector,
-                limit=top_k
-            )
-            print(f"✅ [InterestSearch] Found {len(search_result)} results for '{interest}'")
-        except Exception as e:
-            print(f"❌ [InterestSearch] Search failed for '{interest}': {e}")
-            import traceback
-            traceback.print_exc()
-            continue
-        
-        for hit in search_result:
-            poi_id = hit.id
-            if poi_id not in seen_ids:
-                poi = hit.payload
-                poi['id'] = poi_id
-                poi['_matched_for'] = interest 
-                all_results.append(poi)
-                seen_ids.add(poi_id)
-
-    print(f"✅ [InterestSearch] Total unique results: {len(all_results)}")
-    
-    # 3. If we have multiple interests, we might have too many results.
-    return all_results[:10] if len(interests) > 1 else all_results[:top_k]
+    print(f"✅ [InterestSearch] Total results: {len(all_results)}")
+    return all_results[:top_k]
 
 
 # ---------------------------------------------------------------------------
@@ -201,8 +136,10 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> list[int
     # Compact POI block with ID
     lines = []
     for i, p in enumerate(top_pois, 1):
-        # Prefer the 'ID' column if it exists, otherwise use index-based id
-        pid = p.get('ID') or p.get('id')
+        # Always use the Qdrant point 'id' (lowercase) so Gemini returns IDs
+        # that can be looked up directly in full_poi_map (keyed by Qdrant point ID).
+        # Do NOT use payload 'ID' column — it's a different value from the Qdrant point ID.
+        pid = p.get('id')
         lines.append(
             f"ID: {pid} | {p.get('Name', 'N/A')} | "
             f"{p.get('Category', '')} / {p.get('Sub-category', '')} | "
@@ -217,7 +154,7 @@ def get_gemini_recommendation(user_query: str, top_pois: list[dict]) -> list[int
         f"Here are top-matching potential places with their IDs:\n{lines_block}\n\n"
         "Your Task:\n"
         "1. Select the BEST places (max 3) from the list that collectively cover the traveler's interests.\n"
-        "2. If the user has multiple interests (e.g., 'places on Nile' AND 'eat Koshary'), ensure you select at least one place for each interest part.\n"
+        "2. If the user mentions multiple interests (e.g., visiting a monument AND eating a specific food), ensure you select at least one place for each interest part.\n"
         "3. Return ONLY the IDs of these places in the following strict JSON format:\n"
         "{\"best_ids\": [ID1, ID2, ...]}\n"
         "Do not include any other text, reasoning, or markdown formatting outside the JSON."

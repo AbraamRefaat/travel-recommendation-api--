@@ -6,6 +6,11 @@ from sentence_transformers import SentenceTransformer, CrossEncoder
 from sklearn.metrics.pairwise import cosine_similarity
 import re
 
+try:
+    from .engine_config import CONFIG
+except ImportError:
+    from engine_config import CONFIG
+
 class AICandidateGenerator:
     def __init__(self, collection_name="pois", model_name='all-MiniLM-L6-v2', shared_model=None):
         self.collection_name = collection_name
@@ -87,9 +92,9 @@ class AICandidateGenerator:
             tertiary = []  # 0.5 - ...
             
             for interest, weight in sorted_interests:
-                if weight >= 0.9:
+                if weight >= CONFIG.interest_primary_threshold:
                     primary.append(interest)
-                elif weight >= 0.6:
+                elif weight >= CONFIG.interest_secondary_threshold:
                     secondary.append(interest)
                 else:
                     tertiary.append(interest)
@@ -104,17 +109,18 @@ class AICandidateGenerator:
             
             query = ". ".join(query_parts)
         else:
-             query = "Popular tourist attractions in Cairo and Giza"
+             query = CONFIG.fallback_query
 
         # 2. Semantic Search (via Qdrant) with Hybrid Approach
         print(f"📡 [AICandidateGenerator] Semantic Search for: '{query}'")
         query_vector = self.model.encode(query).tolist()
-        
-        # Aggressive search depth for maximum recall (6x multiplier)
-        SEARCH_DEPTH_MULTIPLIER = 6
+
+        # Search depth multiplier for recall (configurable via env)
+        SEARCH_DEPTH_MULTIPLIER = CONFIG.search_depth_multiplier
         
         # Also generate keyword-based queries for hybrid search
         keyword_queries = []
+        interests = getattr(user_profile, 'interests', {})
         if interests:
             # Extract top 3 interests as keywords
             top_interests = sorted(interests.items(), key=lambda x: x[1], reverse=True)[:3]
@@ -165,18 +171,18 @@ class AICandidateGenerator:
                 row['Description'] = f"{name} - {cat} - {sub}".strip(" -")
 
             # Keyword matching boost for hybrid search
-            if interests:
+            if interests:  # already resolved above via getattr
                 keyword_boost = 0.0
                 poi_text = f"{row.get('Name', '')} {row.get('Category', '')} {row.get('Sub-category', '')} {row.get('Description', '')}".lower()
                 for interest, weight in interests.items():
                     if interest.lower() in poi_text:
-                        keyword_boost += weight * 0.1  # 10% boost per matching interest
+                        keyword_boost += weight * CONFIG.keyword_boost_per_interest
                 row['Keyword_Boost'] = keyword_boost
             else:
                 row['Keyword_Boost'] = 0.0
 
-            # Rename columns to match internal expectations
-            row['Entry cost (EGP)'] = float(row.get('Entry cost (EGP)', 0))
+            # Keep Price range as-is ($, $$, $$$)
+            row['Price range'] = str(row.get('Price range', '')).strip()
             rows.append(row)
             
         candidates = pd.DataFrame(rows)
@@ -187,14 +193,15 @@ class AICandidateGenerator:
         if 'Keyword_Boost' in candidates.columns:
             candidates['Semantic_Score'] = candidates['Semantic_Score'] + candidates['Keyword_Boost']
         
-        # Budget Filter
-        # Access budget_daily safely
-        budget_limit = getattr(user_profile, 'budget_daily', 10000)
-        # Assuming we want individual items to be affordable within the daily budget
-        # Let's say item cost shouldn't exceed 80% of daily budget? 
-        # Or just filtering out insanely expensive things.
-        # Actually, let's just stick to the CandidateGenerator logic:
-        candidates = candidates[candidates['Entry cost (EGP)'] <= budget_limit]
+        # Budget Filter — filter by Price range tier ($, $$, $$$) based on user budget_tier
+        budget_tier = getattr(user_profile, 'budget_tier', 'moderate').lower()
+        PRICE_ORDER = {"$": 1, "$$": 2, "$$$": 3}
+        tier_max = {"budget": 1, "moderate": 2, "luxury": 3}
+        max_tier = tier_max.get(budget_tier, 3)
+        if 'Price range' in candidates.columns:
+            candidates = candidates[
+                candidates['Price range'].map(lambda p: PRICE_ORDER.get(str(p).strip(), 0)).le(max_tier)
+            ]
 
         # Geo Filter (if center provided)
         geo_center = getattr(user_profile, 'geo_center', None)
@@ -222,10 +229,9 @@ class AICandidateGenerator:
                 candidates = candidates[candidates['Distance_km'] <= geo_radius]
         
         # --- RE-RANKING STEP ---
-        # 1. Take top N candidates from the fast Bi-Encoder model
-        #    (We take slightly more than top_k to allow re-ordering)
-        # Increased to 4x for maximum recall
-        top_candidates = candidates.sort_values(by='Semantic_Score', ascending=False).head(top_k * 4)
+        # Take a pool larger than top_k (configurable) so the Cross-Encoder can re-order.
+        top_candidates = candidates.sort_values(by='Semantic_Score', ascending=False).head(
+            top_k * CONFIG.rerank_pool_multiplier)
         
         if not top_candidates.empty:
             print(f"Re-ranking top {len(top_candidates)} candidates with Cross-Encoder...")
@@ -268,7 +274,13 @@ class AICandidateGenerator:
         
         # 1. Budget Filter
         if self.preferences.get('budget_max', 0) > 0:
-            candidates = candidates[candidates['Entry cost (EGP)'] <= self.preferences['budget_max']]
+            # Legacy CLI budget filter — budget_max treated as tier level (1=$, 2=$$, 3=$$$)
+            PRICE_ORDER = {"$": 1, "$$": 2, "$$$": 3}
+            budget_max_tier = int(self.preferences.get('budget_max', 3) or 3)
+            if 'Price range' in candidates.columns:
+                candidates = candidates[
+                    candidates['Price range'].map(lambda p: PRICE_ORDER.get(str(p).strip(), 0)).le(budget_max_tier)
+                ]
             
         # 2. Geo Filter (Vectorized Haversine)
         if 'geo_center' in self.preferences and self.preferences.get('geo_center'):
@@ -303,7 +315,7 @@ if __name__ == "__main__":
     results = ai_gen.search_candidates()
     
     print("\n=== AI Recommended Candidates ===")
-    cols_to_show = ['Name', 'Category', 'Semantic_Score', 'Entry cost (EGP)']
+    cols_to_show = ['Name', 'Category', 'Semantic_Score', 'Price range']
     if 'Distance_km' in results.columns:
         cols_to_show.append('Distance_km')
         

@@ -49,18 +49,15 @@ class RecommendationRequest(BaseModel):
     budget_tier: str = "moderate"
     duration_days: int = 1
     pace: str = "moderate"
-    start_time: str = "09:00"
-    end_time: str = "17:00"
-    
+
     # Optional fields
     budget_daily: Optional[float] = None
-    budget_total: Optional[float] = None
     geo_center: Optional[tuple] = None
     geo_radius_km: float = 20.0
     willingness_to_pay_entry: bool = True
     indoor_preference: str = "neutral"
 
-    # Step 6 — optional free-text interest (triggers semantic search + Gemini)
+    # Optional free-text interest (triggers semantic search + Gemini)
     specific_interest: Optional[str] = None
 
 # ============================================================================
@@ -162,7 +159,7 @@ def poi_to_dict(poi):
         "category": poi.category,
         "subcategory": poi.subcategory,
         "duration_hours": poi.duration_hours,
-        "cost": poi.cost,
+        "price_range": getattr(poi, 'price_range', ''),
         "opening_hours": poi.opening_hours,
         "indoor_outdoor": poi.indoor_outdoor,
         "description": getattr(poi, 'description', ''),
@@ -210,12 +207,9 @@ def recommend(request: RecommendationRequest):
         user_profile = UserProfile(
             interests=request.interests,
             budget_tier=request.budget_tier,
-            budget_daily=request.budget_daily or 1000.0,
-            budget_total=request.budget_total or 5000.0,
+            budget_daily=request.budget_daily,  # None → derived from tier in UserProfile
             duration_days=request.duration_days,
             pace=request.pace,
-            start_time=request.start_time,
-            end_time=request.end_time,
             geo_center=tuple(request.geo_center) if request.geo_center else None,
             geo_radius_km=request.geo_radius_km,
             willingness_to_pay_entry=request.willingness_to_pay_entry,
@@ -229,24 +223,18 @@ def recommend(request: RecommendationRequest):
         # Convert to JSON-serializable format
         print("📦 Converting to JSON...")
         result = {}
-        total_cost = 0.0
         total_pois = 0
-        
+
         for day, events in raw_itinerary.items():
             result[str(day)] = [event_to_dict(e) for e in events]
-            for event in events:
-                total_cost += event["poi"].cost
-                total_pois += 1
-        
+            total_pois += len(events)
+
         response = {
             "success": True,
             "itinerary": result,
             "summary": {
                 "total_days": request.duration_days,
                 "total_pois": total_pois,
-                "total_cost_egp": round(total_cost, 2) if not math.isnan(total_cost) else 0.0,
-                "daily_budget": user_profile.budget_daily,
-                "budget_remaining": round((user_profile.budget_daily * request.duration_days) - total_cost, 2) if not math.isnan(total_cost) else 0.0
             }
         }
         
@@ -280,13 +268,18 @@ def recommend(request: RecommendationRequest):
                     print(f"🔄 [InterestSearch] Using top semantic search results: {selected_ids}")
 
                 # 3. Fetch POI objects for these IDs
-                # Create a lookup map for all available POIs
-                full_poi_map = {p.id: p for p in system.loader.pois}
+                # Reload loader if it was initialised before data was ingested
+                if not system.loader.pois:
+                    print("🔄 [InterestSearch] Loader is empty — reloading from Qdrant...")
+                    system.loader.load_data()
+
+                # Normalise all keys to str to avoid UUID-object vs string mismatches
+                full_poi_map = {str(p.id): p for p in system.loader.pois}
+                print(f"🗺️  [InterestSearch] full_poi_map has {len(full_poi_map)} entries")
 
                 injected_pois = []
                 for sid in selected_ids:
-                    # Search by .id or by custom .ID if we added it
-                    p_obj = full_poi_map.get(sid)
+                    p_obj = full_poi_map.get(str(sid))
                     if p_obj:
                         injected_pois.append(p_obj)
                     else:
@@ -322,23 +315,16 @@ def recommend(request: RecommendationRequest):
                             raw_itinerary[day_num] = new_day_schedule[day_num]
 
                     # 6. Re-calculate full response and summary
-                    # Since we modified raw_itinerary, we rebuild the result dict
                     result = {}
-                    total_cost = 0.0
                     total_pois = 0
                     for day, events in raw_itinerary.items():
                         result[str(day)] = [event_to_dict(e) for e in events]
-                        for event in events:
-                            total_cost += event["poi"].cost
-                            total_pois += 1
-                    
+                        total_pois += len(events)
+
                     response["itinerary"] = result
                     response["summary"] = {
                         "total_days": request.duration_days,
                         "total_pois": total_pois,
-                        "total_cost_egp": round(total_cost, 2) if not math.isnan(total_cost) else 0.0,
-                        "daily_budget": user_profile.budget_daily,
-                        "budget_remaining": round((user_profile.budget_daily * request.duration_days) - total_cost, 2) if not math.isnan(total_cost) else 0.0
                     }
                     response["interest_search"] = {
                         "query": request.specific_interest.strip(),
